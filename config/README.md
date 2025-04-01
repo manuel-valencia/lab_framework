@@ -16,6 +16,7 @@ Valid roles include:
 - `master_node`
 - `carriage_node`
 - `wavemaker_node`
+- `test_node`
 
 This file should be manually updated during setup of each lab computer and example list should be expanded
 if more nodes are added to the system.

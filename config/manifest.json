@@ -10,5 +10,9 @@
   "wavemaker_node": {
     "path": "wavemaker_node/",
     "startup_script": "main.py"
+  },
+  "test_node": {
+  "path": "test_node/",
+  "startup_script": "test_mqtt.py"
   }
 }
