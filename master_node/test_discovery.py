@@ -1,7 +1,18 @@
 import time
-from common.config import MQTT_BROKER_IP
-from common.mqtt_manager import MQTTManager
-from common.node_registry import NodeRegistry
+import json
+# Attempt to import MQTTManager, NodeRegistry and configs from the common package
+try:
+    from common.config import MQTT_BROKER_IP
+    from common.mqtt_manager import MQTTManager
+    from common.node_registry import NodeRegistry
+except ModuleNotFoundError:
+    # If common package not found, append project root to sys.path
+    print("Adding path to file since python has issues recognizing common as package")
+    import sys, os
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from common.config import MQTT_BROKER_IP
+    from common.mqtt_manager import MQTTManager
+    from common.node_registry import NodeRegistry
 
 # Initialize registry and MQTT
 registry = NodeRegistry()
@@ -16,7 +27,7 @@ def handle_discovery_response(client, userdata, message):
     print(f"[master_node] Discovery response received: {payload}")
 
     try:
-        node_info = eval(payload)  # For now, safe eval since we control both sides
+        node_info = json.loads(payload)  # Safe parsing
         registry.add_or_update_node(
             node_id=node_info.get("node_id"),
             ip_address=node_info.get("ip_address"),

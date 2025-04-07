@@ -14,7 +14,8 @@ Future extensions:
 - Role-based node queries
 - Integration with heartbeat monitoring
 """
-
+import json
+import os
 import time
 
 class Node:
@@ -48,15 +49,40 @@ class Node:
 
 
 class NodeRegistry:
-    """Registry that tracks all known nodes in the system."""
-    def __init__(self):
+    def __init__(self, save_path="config/node_registry.json"):
         self.nodes = {}
+        self.save_path = save_path
+        self.load_registry()
+
+    def load_registry(self):
+        """Load node registry from JSON file if it exists."""
+        if os.path.exists(self.save_path):
+            try:
+                with open(self.save_path, "r") as f:
+                    data = json.load(f)
+                    for node_id, node_data in data.items():
+                        self.nodes[node_id] = Node(
+                            node_id=node_data["node_id"],
+                            ip_address=node_data["ip_address"],
+                            role=node_data["role"],
+                            capabilities=node_data["capabilities"]
+                        )
+                        self.nodes[node_id].last_seen = node_data.get("last_seen", time.time())
+                        self.nodes[node_id].status = node_data.get("status", "online")
+                print(f"[NodeRegistry] Loaded registry from {self.save_path}")
+            except Exception as e:
+                print(f"[NodeRegistry] Failed to load registry: {e}")
+
+    def save_registry(self):
+        """Save current node registry to JSON file."""
+        try:
+            with open(self.save_path, "w") as f:
+                json.dump({node_id: node.to_dict() for node_id, node in self.nodes.items()}, f, indent=4)
+            print(f"[NodeRegistry] Saved registry to {self.save_path}")
+        except Exception as e:
+            print(f"[NodeRegistry] Failed to save registry: {e}")
 
     def add_or_update_node(self, node_id, ip_address, role, capabilities=None):
-        """
-        Add a new node or update an existing one.
-        If the node already exists, update its details and timestamp.
-        """
         if node_id in self.nodes:
             node = self.nodes[node_id]
             node.ip_address = ip_address
@@ -67,26 +93,7 @@ class NodeRegistry:
             node = Node(node_id, ip_address, role, capabilities)
             self.nodes[node_id] = node
         print(f"[NodeRegistry] Node added/updated: {node.to_dict()}")
-
-    def mark_node_offline(self, node_id):
-        """Mark a node as offline if it exists."""
-        if node_id in self.nodes:
-            self.nodes[node_id].mark_offline()
-            print(f"[NodeRegistry] Node marked offline: {node_id}")
-
-    def get_node(self, node_id):
-        """Retrieve node information by node ID."""
-        return self.nodes.get(node_id)
-
-    def list_nodes(self):
-        """List all nodes in the registry as dictionaries."""
-        return [node.to_dict() for node in self.nodes.values()]
-
-    def print_registry(self):
-        """Print the current state of the node registry."""
-        print("\n[NodeRegistry] Current Nodes:")
-        for node in self.nodes.values():
-            print(node.to_dict())
+        self.save_registry()  # Auto-save on each update
 
 # # Example usage (for testing only)
 # if __name__ == "__main__":

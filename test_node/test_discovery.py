@@ -1,6 +1,16 @@
-from common.config import MQTT_BROKER_IP
-from common.mqtt_manager import MQTTManager
+# Attempt to import MQTTManager and configs from the common package
+try:
+    from common.config import MQTT_BROKER_IP
+    from common.mqtt_manager import MQTTManager
+except ModuleNotFoundError:
+    # If common package not found, append project root to sys.path
+    print("Adding path to file since python has issues recognizing common as package")
+    import sys, os
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from common.config import MQTT_BROKER_IP
+    from common.mqtt_manager import MQTTManager
 import socket
+import json
 
 # Initialize MQTT
 mq = MQTTManager("test_node", broker=MQTT_BROKER_IP)
@@ -24,13 +34,13 @@ def handle_discovery_request(client, userdata, message):
     print("[test_node] Discovery request received!")
 
     node_info = {
-        "node_id": "test_node",
-        "ip_address": get_local_ip(),
-        "role": "test_node",
-        "capabilities": ["sensor", "actuator"]
-    }
+    "node_id": "test_node",
+    "ip_address": get_local_ip(),
+    "role": "test_node",
+    "capabilities": ["sensor", "actuator"]
+}
 
-    mq.publish("lab/discovery/response", str(node_info))
+    mq.publish("lab/discovery/response", json.dumps(node_info))
     print("[test_node] Sent discovery response.")
 
 if __name__ == "__main__":
