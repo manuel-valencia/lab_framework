@@ -40,7 +40,18 @@ which is set locally. The update process:
 
 **Communication architecture:**
 - **MQTT:** Real-time low-latency messaging (heartbeat, status updates)
+  [master_node] --(MQTT Publish)--> 
+  [broker on test_node] --(MQTT Forward)--> [test_node subscriber]
+
 - **REST:** Structured API for commands, configuration, and data queries
+  [master_node] --(HTTP Request)--> [test_node Flask server]
+  ----------------------(GET /status)
+  ----------------------(GET /metadata)
+  ----------------------(POST /configure)
+
+  [test_node Flask server] --(HTTP Response)--> [master_node]
+  -----------------------------------(Responds with status or metadata)
+
 - Nodes operate independently but synchronize via MQTT and REST protocols.
 
 ---

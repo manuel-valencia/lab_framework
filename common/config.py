@@ -9,7 +9,7 @@ Usage:
 """
 
 # MQTT broker settings
-MQTT_BROKER_IP = "192.168.X.Y"  # Set this to your broker IP
+MQTT_BROKER_IP = "10.29.251.171"  # Set this to your broker IP
 MQTT_PORT = 1883
 
 # Heartbeat settings (in seconds)
@@ -17,4 +17,4 @@ HEARTBEAT_PUBLISH_INTERVAL = 0.1   # Interval between master node heartbeats
 HEARTBEAT_TIMEOUT = 0.2            # Max time to wait before triggering timeout
 
 # REST target node IP (node running Flask server)
-REST_TARGET_IP = "192.168.X.Y"
+REST_TARGET_IP = "10.29.251.171"
