@@ -33,5 +33,8 @@ config/node_role.txt
 *.tmp
 *.bak
 
+# local node registry list
+config/node_registry.json
+
 # === Git directory safe-keep ===
 !.gitignore

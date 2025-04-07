@@ -17,6 +17,15 @@ Future extensions:
 import json
 import os
 import time
+from datetime import datetime
+try:
+    from common.config import NODE_TIMEOUT_SECONDS
+except ModuleNotFoundError:
+    # If common package not found, append project root to sys.path
+    print("Adding path to file since python has issues recognizing common as package")
+    import sys, os
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from common.config import NODE_TIMEOUT_SECONDS
 
 class Node:
     """Represents a single node in the system."""
@@ -38,12 +47,14 @@ class Node:
 
     def to_dict(self):
         """Convert node details to a dictionary (for logging or exporting)."""
+        readable_time = datetime.fromtimestamp(self.last_seen).strftime("%Y-%m-%d %H:%M:%S")
         return {
             "node_id": self.node_id,
             "ip_address": self.ip_address,
             "role": self.role,
             "capabilities": self.capabilities,
             "last_seen": self.last_seen,
+            "last_seen_readable": readable_time,
             "status": self.status
         }
 
@@ -82,6 +93,13 @@ class NodeRegistry:
         except Exception as e:
             print(f"[NodeRegistry] Failed to save registry: {e}")
 
+    def print_registry(self):
+        """Print the current state of the node registry."""
+        print("\n[NodeRegistry] Current Nodes:")
+        for node in self.nodes.values():
+            print(node.to_dict())
+
+
     def add_or_update_node(self, node_id, ip_address, role, capabilities=None):
         if node_id in self.nodes:
             node = self.nodes[node_id]
@@ -89,11 +107,25 @@ class NodeRegistry:
             node.role = role
             node.capabilities = capabilities or node.capabilities
             node.update_last_seen()
+            if node.status == "offline":
+                node.status = "online"
+                print(f"[NodeRegistry] Node {node_id} recovered and marked ONLINE.")
         else:
             node = Node(node_id, ip_address, role, capabilities)
             self.nodes[node_id] = node
         print(f"[NodeRegistry] Node added/updated: {node.to_dict()}")
         self.save_registry()  # Auto-save on each update
+
+    def check_for_offline_nodes(self, timeout_seconds=NODE_TIMEOUT_SECONDS):
+        """
+        Check all nodes and mark them offline if they haven't been seen recently.
+        """
+        current_time = time.time()
+        for node_id, node in self.nodes.items():
+            if current_time - node.last_seen > timeout_seconds and node.status != "offline":
+                node.mark_offline()
+                print(f"[NodeRegistry] Node {node_id} marked offline due to timeout.")
+        self.save_registry()
 
 # # Example usage (for testing only)
 # if __name__ == "__main__":

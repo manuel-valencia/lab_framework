@@ -12,6 +12,9 @@ Usage:
 MQTT_BROKER_IP = "10.31.153.83"  # Set this to your broker IP
 MQTT_PORT = 1883
 
+# Registry node timeout threshold
+NODE_TIMEOUT_SECONDS = 5
+
 # Heartbeat settings (in seconds)
 HEARTBEAT_PUBLISH_INTERVAL = 0.1   # Interval between master node heartbeats
 HEARTBEAT_TIMEOUT = 0.2            # Max time to wait before triggering timeout
