@@ -9,7 +9,7 @@ Usage:
 """
 
 # MQTT broker settings
-MQTT_BROKER_IP = "10.29.251.171"  # Set this to your broker IP
+MQTT_BROKER_IP = "10.31.153.83"  # Set this to your broker IP
 MQTT_PORT = 1883
 
 # Heartbeat settings (in seconds)

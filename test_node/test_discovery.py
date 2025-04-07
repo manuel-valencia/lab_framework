@@ -1,0 +1,43 @@
+from common.config import MQTT_BROKER_IP
+from common.mqtt_manager import MQTTManager
+import socket
+
+# Initialize MQTT
+mq = MQTTManager("test_node", broker=MQTT_BROKER_IP)
+
+def get_local_ip():
+    """Returns local IP address of this node."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+def handle_discovery_request(client, userdata, message):
+    """
+    When a discovery request is received, respond with node details.
+    """
+    print("[test_node] Discovery request received!")
+
+    node_info = {
+        "node_id": "test_node",
+        "ip_address": get_local_ip(),
+        "role": "test_node",
+        "capabilities": ["sensor", "actuator"]
+    }
+
+    mq.publish("lab/discovery/response", str(node_info))
+    print("[test_node] Sent discovery response.")
+
+if __name__ == "__main__":
+    mq.connect()
+    mq.subscribe("lab/discovery/request", handle_discovery_request)
+
+    print("[test_node] Listening for discovery requests...")
+    input("Press Enter to exit...\n")
+
+    mq.disconnect()
