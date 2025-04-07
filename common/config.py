@@ -1,18 +1,20 @@
 """
 common/config.py
 
-Shared constants used across all lab nodes.
-Includes MQTT and REST settings for communication.
+Shared constants and configurations for lab framework nodes.
+Modify these values to change node behavior and networking.
 
-Import these directly in other modules:
-    from common.config import MQTT_BROKER, MQTT_PORT
-
-Note: For dynamic experiment settings, use a separate JSON/YAML config later.
+Usage:
+    from common.config import MQTT_BROKER_IP, HEARTBEAT_PUBLISH_INTERVAL
 """
 
-# MQTT settings
-MQTT_BROKER = "localhost"
+# MQTT broker settings
+MQTT_BROKER_IP = "192.168.X.Y"  # Set this to your broker IP
 MQTT_PORT = 1883
 
-# REST API settings
-REST_PORT = 5000
+# Heartbeat settings (in seconds)
+HEARTBEAT_PUBLISH_INTERVAL = 0.1   # Interval between master node heartbeats
+HEARTBEAT_TIMEOUT = 0.2            # Max time to wait before triggering timeout
+
+# REST target node IP (node running Flask server)
+REST_TARGET_IP = "192.168.X.Y"

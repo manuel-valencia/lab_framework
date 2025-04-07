@@ -1,0 +1,37 @@
+# === Python artifacts ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# === Virtual environments ===
+venv/
+env/
+.venv/
+
+# === Jupyter notebooks (optional) ===
+.ipynb_checkpoints/
+
+# === System files ===
+.DS_Store
+Thumbs.db
+
+# === OS generated files ===
+ehthumbs.db
+Desktop.ini
+
+# === Lab Framework specific ===
+
+# Local machine role config (each machine sets this individually)
+config/node_role.txt
+
+# Logs and temp files
+/var/log/lab_framework_update.log
+
+# Compiled / temporary test outputs
+*.tmp
+*.bak
+
+# === Git directory safe-keep ===
+!.gitignore
