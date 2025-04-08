@@ -24,8 +24,12 @@ echo "[INFO] Previous commit: $PREV_COMMIT"
 # === GIT SYNC ===
 echo "[INFO] Pulling latest code from remote..."
 git fetch --all
-git reset --hard origin/main
-git clean -fd
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+echo "[INFO] Pulling latest code from branch: $CURRENT_BRANCH"
+git reset --hard origin/$CURRENT_BRANCH
+
+#git clean -fd -e config/node_role.txt !!! Since on dev will not clear all files just yet. In main V1.0 should !!!
 # !!! Because of force-sync and file removal, developers should test on 'dev' branch, not 'main' !!!
 
 # === ROLE DETECTION ===
