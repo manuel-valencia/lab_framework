@@ -1,48 +1,59 @@
-# This script is the core of the node update mechanism. Every node runs this script to:
-# > Pull the latest code from the central repository
-# > Determine which code and script it should run (based on its role)
-# > Launch that script appropriately (Python or MATLAB)
-# > Log all actions and roll back to a safe state if startup fails
-# This enables CI/CD-style deployment with per-node modularity and reliability.
-
 #!/bin/bash
 
-cd ~/lab_framework # Navigate to the main project directory (adjust path if needed)
+# =============================================================================
+# pull_and_deploy.sh
+#
+# Description:
+# - Core deployment script for the Lab Framework.
+# - Pulls latest code from the current Git branch.
+# - Preserves node_role.txt and environment-specific files.
+# - Uses Python (not jq) to parse manifest.json.
+# - Launches the appropriate node script based on config.
+#
+# Usage:
+# bash updater/pull_and_deploy.sh
+#
+# =============================================================================
 
-# === LOGGING SETUP ===
-LOGFILE="/var/log/lab_framework_update.log"
-mkdir -p $(dirname "$LOGFILE") 2>/dev/null # Create log directory if it doesn't exist
-exec > >(tee -a "$LOGFILE") 2>&1           # Redirect stdout and stderr to terminal AND log file
-
-echo "==========================================================="
 echo "[INFO] $(date) :: STARTING UPDATE"
 
-# === BACKUP CURRENT COMMIT FOR ROLLBACK ===
-PREV_COMMIT=$(git rev-parse HEAD)
-echo "[INFO] Previous commit: $PREV_COMMIT"
+# Preserve the current commit hash in case rollback is needed
+PREVIOUS_COMMIT=$(git rev-parse HEAD)
+echo "[INFO] Previous commit: $PREVIOUS_COMMIT"
 
-# === GIT SYNC ===
 echo "[INFO] Pulling latest code from remote..."
 git fetch --all
 
+# Detect current branch dynamically
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo "[INFO] Pulling latest code from branch: $CURRENT_BRANCH"
+
+# Pull latest and hard reset to remote branch
 git reset --hard origin/$CURRENT_BRANCH
 
-#git clean -fd -e config/node_role.txt !!! Since on dev will not clear all files just yet. In main V1.0 should !!!
-# !!! Because of force-sync and file removal, developers should test on 'dev' branch, not 'main' !!!
+# Clean untracked files, but preserve node_role.txt
+#git clean -fd -e config/node_role.txt
 
-# === ROLE DETECTION ===
-ROLE=$(cat config/node_role.txt) # Load this node’s role (e.g., master_node)
-SCRIPT=$(jq -r ".$ROLE.startup_script" config/manifest.json) # Lookup script name
-PATH_TO_SCRIPT=$(jq -r ".$ROLE.path" config/manifest.json)   # Lookup path to code
+# Check node role file exists
+if [ ! -f config/node_role.txt ]; then
+  echo "[ERROR] config/node_role.txt not found! Cannot determine node role."
+  echo "[INFO] Rolling back to previous commit..."
+  git reset --hard $PREVIOUS_COMMIT
+  exit 1
+fi
 
+# Read node role
+ROLE=$(cat config/node_role.txt)
 echo "[INFO] Detected role: $ROLE"
+
+# Use Python to parse manifest.json and get the script path and name
+SCRIPT=$(python3 -c "import json; print(json.load(open('config/manifest.json'))['$ROLE']['startup_script'])")
+PATH_TO_SCRIPT=$(python3 -c "import json; print(json.load(open('config/manifest.json'))['$ROLE']['path'])")
+
 echo "[INFO] Launching: $PATH_TO_SCRIPT$SCRIPT"
 
-# === SCRIPT EXECUTION ===
-EXT="${SCRIPT##*.}" # Extract file extension to determine runtime
-
+# Determine script extension and launch accordingly
+EXT="${SCRIPT##*.}"
 if [ "$EXT" = "py" ]; then
   python3 "$PATH_TO_SCRIPT$SCRIPT"
 elif [ "$EXT" = "m" ]; then
@@ -50,19 +61,6 @@ elif [ "$EXT" = "m" ]; then
 else
   echo "[ERROR] Unknown script type: $EXT"
   echo "[INFO] Rolling back to previous commit..."
-  git reset --hard "$PREV_COMMIT"
-  echo "[INFO] Rollback complete to $PREV_COMMIT"
+  git reset --hard $PREVIOUS_COMMIT
   exit 1
 fi
-
-# === CHECK FOR FAILURE ===
-if [ $? -ne 0 ]; then
-  echo "[ERROR] Script failed to launch properly."
-  echo "[INFO] Rolling back to previous commit..."
-  git reset --hard "$PREV_COMMIT"
-  echo "[INFO] Rollback complete to $PREV_COMMIT"
-  exit 1
-fi
-
-echo "[INFO] Update and startup completed successfully for role: $ROLE"
-echo "==========================================================="
