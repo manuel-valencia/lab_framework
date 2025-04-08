@@ -1,58 +1,49 @@
+
 # Lab Framework
 
-A modular and scalable software system for automating hydrodynamic experiments in 
-educational and research settings.
+A modular and scalable software system for automating hydrodynamic experiments in educational and research settings.
 
-This project enables CI/CD-style deployment and real-time control of experimental 
-systems across multiple lab computers (nodes), including the Master Workstation, 
-Carriage Laptop, and Wave Maker node.
+This project enables CI/CD-style deployment and real-time control of experimental systems across multiple lab computers (nodes), including the Master Workstation, Carriage Laptop, and Wave Maker node.
 
 ---
 
 ## 🚀 Project Status
 
-**Current Version**: `v0.1`  
+**Current Version**: `v0.3`  
 **Target Version for Deployment**: `v1.0` (End of Semester)
 
 Major features completed:
 - ✅ MQTT-based real-time communication
 - ✅ REST-based structured command exchange
 - ✅ Deadman switch for heartbeat monitoring
+- ✅ Dynamic node discovery and registry management
+- ✅ Node role-based auto-deploy via pull_and_deploy.sh (Python-based, no jq dependency)
 
 Upcoming features:
-- 🔄 Node discovery and introspection
 - 🎛️ Calibration and validation routines
 - 🧩 Experiment configuration and execution flow
 - ⚙️ System-wide logging and diagnostics
+- 🗄️ Persistent configuration management
 
 ---
 
 ## 🧠 System Overview
 
-Each lab node pulls its logic from a central Git repository. Node behavior 
-is determined by its role (`master_node`, `carriage_node`, or `wavemaker_node`), 
-which is set locally. The update process:
+Each lab node pulls its logic from a central Git repository. Node behavior is determined by its role (`master_node`, `carriage_node`, `wavemaker_node`, or `test_node`), which is set locally. The update process:
 
-1. Pulls the latest code from the `main` branch
+1. Pulls the latest code from the current Git branch
 2. Detects the role of the node
 3. Launches the appropriate startup script (Python or MATLAB)
 4. Logs all actions and rolls back on failure
 
 **Communication architecture:**
-- **MQTT:** Real-time low-latency messaging (heartbeat, status updates)
-  [master_node] --(MQTT Publish)--> 
-  [broker on test_node] --(MQTT Forward)--> [test_node subscriber]
+- **MQTT:** Real-time low-latency messaging (heartbeat, status updates, node discovery)
+  - Nodes proactively announce their status.
+  - Master node maintains a live node registry.
+  - Fully dynamic: nodes can join, leave, and rejoin the network without manual reconfiguration.
 
 - **REST:** Structured API for commands, configuration, and data queries
-  [master_node] --(HTTP Request)--> [test_node Flask server]
-  ----------------------(GET /status)
-  ----------------------(GET /metadata)
-  ----------------------(POST /configure)
-
-  [test_node Flask server] --(HTTP Response)--> [master_node]
-  -----------------------------------(Responds with status or metadata)
-
-- Nodes operate independently but synchronize via MQTT and REST protocols.
+  - Not used for discovery in v0.3, reserved for future command/control.
 
 ---
 
@@ -60,15 +51,16 @@ which is set locally. The update process:
 
 ```
 lab_framework/
-├── common/            # Shared code (e.g., interfaces, MQTT/REST handlers)
-├── master_node/       # Master control and experiment orchestration
-├── carriage_node/     # Force sensor and data collection logic
-├── wavemaker_node/    # Wave paddle and waveform generator logic
-├── test_node/         # Development/testing node for new features
-├── config/            # Per-node settings and startup map
-├── updater/           # Deployment script for CI/CD
-├── tests/             # Unit and integration tests (planned)
-└── README.md          # This file
+├── common/              # Shared code (MQTT manager, node registry, config)
+├── master_node/         # Master control and experiment orchestration (legacy)
+├── test_master_node/    # Test master node for discovery and registry flow
+├── test_node/           # Development/testing node with proactive heartbeats
+├── carriage_node/       # Force sensor and data collection logic (future)
+├── wavemaker_node/      # Wave paddle and waveform generator logic (future)
+├── config/              # Per-node settings, manifest, and node registry
+├── updater/             # Deployment script for CI/CD
+├── tests/               # Unit and integration tests (planned)
+└── README.md            # This file
 ```
 
 ---
@@ -79,7 +71,7 @@ lab_framework/
 Manually set this on each machine to match its hardware role:
 
 ```
-carriage_node
+master_node
 ```
 
 Valid roles:
@@ -87,6 +79,8 @@ Valid roles:
 - `carriage_node`
 - `wavemaker_node`
 - `test_node` (development/testing)
+
+> 🔧 **Important:** This file is local and not tracked by Git. You must set it manually per node.
 
 ---
 
@@ -101,8 +95,8 @@ Maps each node role to the folder and startup script to execute:
     "startup_script": "main.py"
   },
   "master_node": {
-    "path": "master_node/",
-    "startup_script": "main.py"
+    "path": "test_master_node/",
+    "startup_script": "test_discovery.py"
   },
   "wavemaker_node": {
     "path": "wavemaker_node/",
@@ -110,7 +104,7 @@ Maps each node role to the folder and startup script to execute:
   },
   "test_node": {
     "path": "test_node/",
-    "startup_script": "test_mqtt.py"
+    "startup_script": "test_discovery.py"
   }
 }
 ```
@@ -132,11 +126,11 @@ MQTT_PORT = 1883
 HEARTBEAT_PUBLISH_INTERVAL = 0.1
 HEARTBEAT_TIMEOUT = 0.2
 
-# REST target node IP (for REST client tests)
-REST_TARGET_IP = "192.168.X.Y"
+# Node registry timeout (offline threshold, in seconds)
+NODE_TIMEOUT_SECONDS = 5
 ```
 
-Update this file to adjust broker address, heartbeat timings, and REST targets.
+Update this file to adjust broker address, heartbeat timings, and timeouts.
 
 ---
 
@@ -149,13 +143,12 @@ bash updater/pull_and_deploy.sh
 ```
 
 This script will:
-- Pull the latest `main` branch
-- Clean all untracked files
-- Lookup the node's role
-- Launch the corresponding script
-- Log activity to `/var/log/lab_framework_update.log`
+- Pull the latest branch (auto-detects current working branch)
+- Clean untracked files, but **preserves `config/node_role.txt`**
+- Lookup the node's role via `node_role.txt`
+- Parse `manifest.json` using Python (no jq dependency)
+- Launch the corresponding script based on node role
 - Roll back to the previous Git commit if the script fails
-
 ---
 
 ## 📦 Local Setup (Dev or Prod Node)
@@ -168,17 +161,24 @@ cd lab_framework
 
 2. Set the node role:
 ```bash
-echo "carriage_node" > config/node_role.txt
+echo "test_node" > config/node_role.txt
 ```
 
 3. Configure `common/config.py`:
-- Set the correct broker IP address
-- Adjust heartbeat intervals as needed
-- Set REST target node IP for testing
+- Set the correct broker IP address (use the master node IP)
+- Adjust heartbeat intervals and timeouts as needed
 
-4. Install required dependencies (see below).
+4. Install required dependencies:
+```bash
+pip install flask requests paho-mqtt
+```
 
-5. Run the updater:
+5. Ensure the MQTT broker is running on the master node:
+```bash
+mosquitto -c "path/to/mosquitto.conf"
+```
+
+6. Run the updater:
 ```bash
 bash updater/pull_and_deploy.sh
 ```
@@ -193,12 +193,12 @@ pip install flask requests paho-mqtt
 ```
 
 ### MQTT Broker:
-Install Mosquitto (on broker node, e.g., test_node):
+Install Mosquitto (broker runs on master node):
 ```bash
 # On Ubuntu:
 sudo apt-get install mosquitto mosquitto-clients
 
-# On Windows: 
+# On Windows:
 Download from https://mosquitto.org/download/ and run:
 mosquitto -c "path\to\mosquitto.conf"
 ```
@@ -211,18 +211,19 @@ allow_anonymous true
 
 ### Network:
 - Ensure all nodes are on the same local network.
-- Verify broker node’s IP address.
-- Disable or configure firewalls to allow traffic on port 1883 (MQTT) 
-  and 5000 (REST).
+- Use a tool (e.g., IP scanner) or configure nodes to find the master node IP.
+- Disable or configure firewalls to allow traffic on port 1883 (MQTT).
 
 ---
 
 ## 🔧 Developer Notes
 
-- Always test your code on a separate `dev` branch.
-- Production updates should be pushed to `main` after validation.
-- Code should be modular per-node and share logic through the `common/` folder.
-- Document all changes and add test coverage in `/tests`.
+- Always work in the `dev` branch until validated.
+- Production updates should be pushed to `main` only after full testing.
+- Code is modular: per-node logic lives in its respective folder.
+- Node registry is auto-saved in `config/node_registry.json`.
+- All configuration lives in `config/` or `common/config.py`.
+- `pull_and_deploy.sh` auto-launches the correct script per node.
 
 ---
 
@@ -232,8 +233,9 @@ allow_anonymous true
 |---------|----------------------------------|
 | v0.0    | Project scaffold + deploy logic  |
 | v0.1    | ✅ MQTT + REST communication     |
-| v0.2    | Node registry + discovery        |
-| v0.3    | Calibration & validation routines|
+| v0.2    | ✅ Node registry + discovery     |
+| v0.3    | ✅ Proactive heartbeats + live registry |
+| v0.4    | Calibration & validation routines|
 | ...     | ...                              |
 | v1.0    | Full deployment and validation   |
 
