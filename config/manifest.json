@@ -17,6 +17,6 @@
   },
   "test_node": {
   "path": "test_node/",
-  "startup_script": "test_mqtt.py"
+  "startup_script": "test_discovery.py"
   }
 }
