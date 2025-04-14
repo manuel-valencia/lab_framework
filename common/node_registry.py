@@ -92,7 +92,7 @@ class NodeRegistry:
         try:
             with open(self.save_path, "w") as f:
                 json.dump({node_id: node.to_dict() for node_id, node in self.nodes.items()}, f, indent=4)
-            print(f"[NodeRegistry] Saved registry to {self.save_path}")
+            #print(f"[NodeRegistry] Saved registry to {self.save_path}")
         except Exception as e:
             print(f"[NodeRegistry] Failed to save registry: {e}")
 
@@ -102,6 +102,12 @@ class NodeRegistry:
         for node in self.nodes.values():
             print(node.to_dict())
 
+    def get_node(self, node_id):
+        """
+        Retrieves a node by its node_id.
+        Returns None if node does not exist.
+        """
+        return self.nodes.get(node_id)
 
     def add_or_update_node(self, node_id, ip_address, role, capabilities=None):
         if node_id in self.nodes:
@@ -116,7 +122,7 @@ class NodeRegistry:
         else:
             node = Node(node_id, ip_address, role, capabilities)
             self.nodes[node_id] = node
-        print(f"[NodeRegistry] Node added/updated: {node.to_dict()}")
+        #print(f"[NodeRegistry] Node added/updated: {node.to_dict()}")
         self.save_registry()  # Auto-save on each update
 
     def check_for_offline_nodes(self, timeout_seconds=NODE_TIMEOUT_SECONDS):

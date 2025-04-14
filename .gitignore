@@ -36,5 +36,8 @@ config/node_role.txt
 # local node registry list
 config/node_registry.json
 
+# log folder
+log/
+
 # === Git directory safe-keep ===
 !.gitignore

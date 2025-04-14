@@ -70,9 +70,9 @@ def handle_discovery_response(client, userdata, message):
             capabilities=node_info.get("capabilities")
         )
 
-        # Print only if node was recovered (came back online)
-        if was_offline:
-            print(f"[master_node] Node {node_id} recovered and marked ONLINE.")
+        # # Print only if node was recovered (came back online)
+        # if was_offline:
+        #     print(f"[master_node] Node {node_id} recovered and marked ONLINE.")
 
     except Exception as e:
         print(f"[master_node] Error processing discovery response: {e}")
@@ -192,6 +192,7 @@ if __name__ == "__main__":
     # Connect to MQTT and subscribe to discovery responses
     mq.connect()
     mq.subscribe(DISCOVERY_RESPONSE_TOPIC, handle_discovery_response)
+    mq.subscribe(RESPONSE_TOPIC, handle_command_response)
 
     # Start monitoring for node timeouts
     start_offline_monitor()
