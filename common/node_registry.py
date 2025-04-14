@@ -36,6 +36,8 @@ class Node:
         self.capabilities = capabilities or []
         self.last_seen = time.time()
         self.status = "online"
+        self.history = []  # List to track command history (dicts)
+
 
     def update_last_seen(self):
         """Update the last seen timestamp to now."""
@@ -55,7 +57,8 @@ class Node:
             "capabilities": self.capabilities,
             "last_seen": self.last_seen,
             "last_seen_readable": readable_time,
-            "status": self.status
+            "status": self.status,
+            "history": self.history
         }
 
 
