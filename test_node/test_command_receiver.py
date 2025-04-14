@@ -127,7 +127,7 @@ def send_periodic_heartbeat():
     while True:
         node_info = get_node_info()
         mq.publish(DISCOVERY_RESPONSE_TOPIC, json.dumps(node_info))
-        print("[test_node] Sent periodic heartbeat.")
+        #print("[test_node] Sent periodic heartbeat.")
         time.sleep(HEARTBEAT_PUBLISH_INTERVAL)
 
 # =============================================================================

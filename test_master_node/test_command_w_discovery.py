@@ -52,16 +52,28 @@ def handle_discovery_response(client, userdata, message):
     Process discovery responses from nodes and update registry.
     """
     payload = message.payload.decode()
-    print(f"[master_node] Discovery response received: {payload}")
+    #print(f"[master_node] Discovery response received: {payload}")
 
     try:
         node_info = json.loads(payload)
+        node_id = node_info.get("node_id")
+
+        # Determine if node was previously offline
+        node = registry.get_node(node_id)
+        was_offline = node and node.status == "offline"
+
+        # Update registry
         registry.add_or_update_node(
             node_id=node_info.get("node_id"),
             ip_address=node_info.get("ip_address"),
             role=node_info.get("role"),
             capabilities=node_info.get("capabilities")
         )
+
+        # Print only if node was recovered (came back online)
+        if was_offline:
+            print(f"[master_node] Node {node_id} recovered and marked ONLINE.")
+
     except Exception as e:
         print(f"[master_node] Error processing discovery response: {e}")
 

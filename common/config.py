@@ -13,7 +13,7 @@ Usage:
 # =============================================================================
 
 # MQTT broker settings
-MQTT_BROKER_IP = "10.31.153.83"  # Master node IP running the MQTT broker
+MQTT_BROKER_IP = "10.29.219.193"  # Master node IP running the MQTT broker
 MQTT_PORT = 1883                 # Default MQTT port
 
 # REST target node IP (optional, node running Flask server)
