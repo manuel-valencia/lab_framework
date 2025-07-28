@@ -1,0 +1,4 @@
+{"timestamp":"2025-07-28 04:39:06.8015","topic":"waveGenNode/cmd","message":"{\"cmd\":\"Test\",\"params\":{\"target\":\"actuator\",\"amplitude\":1,\"frequency\":1,\"duration\":2}}"}
+{"timestamp":"2025-07-28 04:39:07.0058","topic":"waveGenNode/cmd","message":"{\"cmd\":\"TestValid\"}"}
+{"timestamp":"2025-07-28 04:39:10.3729","topic":"controlNode/cmd","message":"{\"cmd\":\"Run\",\"params\":{\"amplitude\":1,\"frequency\":1,\"duration\":10}}"}
+{"timestamp":"2025-07-28 04:39:10.4669","topic":"controlNode/cmd","message":"{\"cmd\":\"RunValid\"}"}

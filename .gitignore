@@ -10,7 +10,7 @@ venv/
 env/
 .venv/
 
-# === Jupyter notebooks (optional) ===
+# === Jupyter notebooks ===
 .ipynb_checkpoints/
 
 # === System files ===
@@ -20,6 +20,12 @@ Thumbs.db
 # === OS generated files ===
 ehthumbs.db
 Desktop.ini
+
+# === MATLAB artifacts ===
+*.asv
+
+# === tempRestData files ===
+tempRestData/
 
 # === Lab Framework specific ===
 

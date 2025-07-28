@@ -3,10 +3,6 @@
     "path": "master_node/",
     "startup_script": "main.py"
   },
-  "test_master_node": {
-    "path": "test_master_node/",
-    "startup_script": "test_discovery.py"
-  },
   "carriage_node": {
     "path": "carriage_node/",
     "startup_script": "main.py"
@@ -14,9 +10,5 @@
   "wavemaker_node": {
     "path": "wavemaker_node/",
     "startup_script": "main.py"
-  },
-  "test_node": {
-  "path": "test_node/",
-  "startup_script": "test_discovery.py"
   }
 }

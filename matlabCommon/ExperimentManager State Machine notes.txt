@@ -1,0 +1,36 @@
+# ExperimentManager State Machine Summary
+
+## State Definitions
+
+- IDLE
+  System is initialized and waiting for user command.
+  - Transitions:
+    - on "StartExperiment" -> CONFIGURING
+
+- CONFIGURING
+  Node configures local parameters (waveform, force sample rate, etc.)
+  - Transitions:
+    - on configuration complete -> READY
+
+- READY
+  System is configured and waiting for external "GO" signal
+  - Transitions:
+    - on "StartRun" -> RUNNING
+
+- RUNNING
+  System is actively executing the experiment
+  - Transitions:
+    - on experiment complete -> FINISHED
+    - on "Abort" -> ERROR
+
+- FINISHED
+  System returns to IDLE after optional cleanup/logging
+
+- ERROR
+  Entered on any fault or user-issued Abort
+  - Transitions:
+    - on "Reset" -> IDLE
+
+## Notes:
+- ExperimentManager should issue all state transition messages through CommClient's publish method using topic: `<node>/status`
+- Callbacks from CommClient (e.g., incoming /cmd) trigger transitions when appropriate
