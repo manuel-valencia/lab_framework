@@ -2,6 +2,7 @@
 % Local test harness for ExperimentManager FSM using TestNodeManager
 % No MQTT required; simulates commands and prints transitions and assertions
 
+clear; clc;
 addpath(genpath(fullfile(fileparts(mfilename('fullpath')), '..', 'matlabCommon')));
 
 % --- Setup Configuration (mock)
@@ -11,15 +12,24 @@ cfg.mqtt.topics.error = "error";
 cfg.hardware = struct();
 cfg.hardware.hasSensor = true;
 cfg.hardware.hasActuator = true;
+cfg.clientID = "TestNode";
 
-% --- Create Mock CommClient with no-op publish
+% --- Create Mock CommClient with no-op publish and Mock RestClient
 mockComm = struct();
 mockComm.commPublish = @(topic, data) fprintf("[MQTT] %s → %s\n", topic, jsonencode(data));
 mockComm.isOpen = true;
 mockComm.close = @() disp("[MQTT] Connection closed.");
+mockComm.connect = @() disp("[MQTT] Connected");
+mockComm.clientID = cfg.clientID;
+mockComm.getFullTopic = @(string) sprintf("TestNode/%s", string);
+
+
+mockRest = struct();
+mockRest.checkHealth = @() true;
+mockRest.clientID = cfg.clientID;
 
 % --- Instantiate Test Manager
-mgr = TestNodeManager(cfg, mockComm);
+mgr = TestNodeManager(cfg, mockComm, mockRest);
 
 % --- Helpers
 function runTestCase(title, cmdStruct, mgr, expectedState)
@@ -45,13 +55,12 @@ runTestCase("Calibrate Step 2", struct("cmd", "Calibrate", "params", struct("hei
 runTestCase("Calibrate Finish", struct("cmd", "Calibrate", "params", struct("finished", true)), mgr, "IDLE");
 
 % --- Test 2: Sensor diagnostics
-runTestCase("Sensor Test", struct("cmd", "Test", "target", "sensor"), mgr, "TESTINGSENSOR");
+runTestCase("Sensor Test", struct("cmd", "Test", "params", struct("target", "sensor")), mgr, "TESTINGSENSOR");
 runTestCase("Reset after sensor test", struct("cmd", "Reset"), mgr, "IDLE");
 
-% --- Test 3: Run configuration and actuator test (VALID now)
+% --- Test 3: Run configuration and actuator test
 runTestCase("Run Configure", struct("cmd", "Run", ...
     "params", struct("waveType", "sin", "amplitude", 0.05)), mgr, "CONFIGUREPENDING");
-runTestCase("Reset after config", struct("cmd", "Reset"), mgr, "IDLE");
 runTestCase("Test Actuator", struct("cmd", "TestValid"), mgr, "TESTINGACTUATOR");
 runTestCase("Reset after actuator test", struct("cmd", "Reset"), mgr, "IDLE");
 

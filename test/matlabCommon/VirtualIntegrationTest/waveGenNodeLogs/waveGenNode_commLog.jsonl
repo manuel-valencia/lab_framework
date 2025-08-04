@@ -1,4 +1,13 @@
-{"timestamp":"2025-07-28 04:39:06.8015","topic":"waveGenNode/cmd","message":"{\"cmd\":\"Test\",\"params\":{\"target\":\"actuator\",\"amplitude\":1,\"frequency\":1,\"duration\":2}}"}
-{"timestamp":"2025-07-28 04:39:07.0058","topic":"waveGenNode/cmd","message":"{\"cmd\":\"TestValid\"}"}
-{"timestamp":"2025-07-28 04:39:10.3729","topic":"controlNode/cmd","message":"{\"cmd\":\"Run\",\"params\":{\"amplitude\":1,\"frequency\":1,\"duration\":10}}"}
-{"timestamp":"2025-07-28 04:39:10.4669","topic":"controlNode/cmd","message":"{\"cmd\":\"RunValid\"}"}
+{"timestamp":"2025-08-03 23:38:20.0463","topic":"waveGenNode/cmd","message":"{\"cmd\":\"Test\",\"params\":{\"target\":\"actuator\",\"amplitude\":1,\"frequency\":1,\"duration\":1},\"timestamp\":\"2025-08-03 23:38:20.0418\"}"}
+{"timestamp":"2025-08-03 23:38:20.2642","topic":"waveGenNode/cmd","message":"{\"cmd\":\"TestValid\",\"timestamp\":\"2025-08-03 23:38:20.2600\"}"}
+{"timestamp":"2025-08-03 23:38:21.9409","topic":"controlNode/cmd","message":"{\"cmd\":\"Run\",\"params\":{\"amplitude\":1,\"frequency\":1.5,\"duration\":2},\"timestamp\":\"2025-08-03 23:38:21.9344\"}"}
+{"timestamp":"2025-08-03 23:38:22.1545","topic":"controlNode/cmd","message":"{\"cmd\":\"RunValid\",\"timestamp\":\"2025-08-03 23:38:22.1506\"}"}
+{"timestamp":"2025-08-03 23:38:27.0116","topic":"controlNode/cmd","message":"{\"cmd\":\"Run\",\"params\":{\"name\":\"MultiExperimentTest\",\"experiments\":[{\"name\":\"LowFreq_HighAmplitude\",\"amplitude\":2,\"frequency\":0.5,\"duration\":2},{\"name\":\"MidFreq_MidAmplitude\",\"amplitude\":1.5,\"frequency\":1.5,\"duration\":0.5},{\"name\":\"HighFreq_LowAmplitude\",\"amplitude\":0.8,\"frequency\":2.3,\"duration\":1}]},\"timestamp\":\"2025-08-03 23:38:26.8935\"}"}
+{"timestamp":"2025-08-03 23:38:27.2634","topic":"controlNode/cmd","message":"{\"cmd\":\"RunValid\",\"timestamp\":\"2025-08-03 23:38:27.1812\"}"}
+{"timestamp":"2025-08-03 23:38:38.6755","topic":"controlNode/cmd","message":"{\"cmd\":\"Run\",\"params\":{\"amplitude\":1,\"frequency\":2,\"duration\":10},\"timestamp\":\"2025-08-03 23:38:38.4150\"}"}
+{"timestamp":"2025-08-03 23:38:39.0982","topic":"controlNode/cmd","message":"{\"cmd\":\"RunValid\",\"timestamp\":\"2025-08-03 23:38:39.0931\"}"}
+{"timestamp":"2025-08-03 23:38:40.1736","topic":"controlNode/cmd","message":"{\"cmd\":\"Abort\",\"params\":{\"reason\":\"Control node initiated abort test\"},\"timestamp\":\"2025-08-03 23:38:40.1671\"}"}
+{"timestamp":"2025-08-03 23:38:40.3893","topic":"controlNode/cmd","message":"{\"cmd\":\"Reset\",\"timestamp\":\"2025-08-03 23:38:40.3850\"}"}
+{"timestamp":"2025-08-03 23:38:40.6059","topic":"waveGenNode/cmd","message":"{\"cmd\":\"Test\",\"params\":{\"target\":\"actuator\",\"amplitude\":1,\"frequency\":1,\"duration\":10},\"timestamp\":\"2025-08-03 23:38:40.6018\"}"}
+{"timestamp":"2025-08-03 23:38:40.8240","topic":"waveGenNode/cmd","message":"{\"cmd\":\"TestValid\",\"timestamp\":\"2025-08-03 23:38:40.8193\"}"}
+{"timestamp":"2025-08-03 23:38:41.6574","topic":"waveGenNode/cmd","message":"{\"cmd\":\"Reset\",\"timestamp\":\"2025-08-03 23:38:41.6532\"}"}

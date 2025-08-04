@@ -10,6 +10,13 @@ venv/
 env/
 .venv/
 
+# === Python testing ===
+.pytest_cache/
+.coverage
+.tox/
+
+PaperStuff/
+
 # === Jupyter notebooks ===
 .ipynb_checkpoints/
 
@@ -21,11 +28,24 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
+# === IDE and Editor settings ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
 # === MATLAB artifacts ===
 *.asv
 
+# === Data files (test data, experiments, etc.) ===
+*.csv
+*.xlsx
+*.json.bak
+
 # === tempRestData files ===
 tempRestData/
+**/tempRestData/
 
 # === Lab Framework specific ===
 
@@ -42,8 +62,17 @@ config/node_role.txt
 # local node registry list
 config/node_registry.json
 
-# log folder
-log/
+logs/
+
+# Test data and experiment outputs
+test/**/VirtualIntegrationTest/waveGenNodeData/
+test/**/VirtualIntegrationTest/*.csv
+test/**/VirtualIntegrationTest/*.txt
+test/**/VirtualIntegrationTest/*.mat
 
 # === Git directory safe-keep ===
 !.gitignore
+
+# === Keep important files that might match patterns above ===
+!pythonCommon/requirements.txt
+!**/README.md

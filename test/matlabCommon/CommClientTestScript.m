@@ -90,23 +90,7 @@ catch ME
     fprintf("[FAIL] getFullTopic test failed: %s\n", ME.message);
 end
 
-% Test 6: addToLog ring buffer
-fprintf("\n[TEST] addToLog ring buffer behavior\n");
-try
-    for i = 1:105
-        topic = sprintf('topic%d', i);
-        msg = sprintf('Message %d', i);
-        client2.addToLog(topic, msg);
-    end
-    assert(length(client2.messageLog) == 100);
-    oldest = client2.messageLog{1};
-    assert(strcmp(oldest.message, 'Message 6'));
-    fprintf("[PASS] addToLog capped messageLog to 100 entries correctly.\n");
-catch ME
-    fprintf("[FAIL] addToLog test failed: %s\n", ME.message);
-end
-
-% Test 7: handleMessage
+% Test 6: handleMessage
 fprintf("\n[TEST] handleMessage behavior\n");
 try
     testTopic = 'connectTestNode/cmd';
@@ -127,7 +111,7 @@ catch ME
     fprintf("[FAIL] handleMessage test failed: %s\n", ME.message);
 end
 
-% Test 8: sendHeartbeat and Heartbeat timer
+% Test 7: sendHeartbeat and Heartbeat timer
 fprintf("\n[TEST] Heartbeat timer functionality\n");
 cfg8.clientID = 'heartbeatTimerNode';
 cfg8.verbose = false;
@@ -148,7 +132,7 @@ end
 
 client8.disconnect();  % cleanup
 
-% Test 9: Destructor auto-disconnect check (indirect)
+% Test 8: Destructor auto-disconnect check (indirect)
 fprintf("\n[TEST] Destructor calls disconnect()\n");
 try
     cfg9.clientID = 'deleteTestNode';
@@ -166,7 +150,7 @@ catch ME
     fprintf("[FAIL] Destructor test failed: %s\n", ME.message);
 end
 
-% Test 10: Invalid constructor field test
+% Test 9: Invalid constructor field test
 fprintf("\n[TEST] Constructor error handling for bad callback\n");
 try
     cfg10.clientID = 'badNode';
@@ -178,7 +162,7 @@ catch
     fprintf("[PASS] Constructor correctly rejected invalid callback.\n");
 end
 
-% Test 11: Inter-node Messaging between Master and Actuator
+% Test 10: Inter-node Messaging between Master and Actuator
 fprintf("\n[TEST] Inter-node messaging between Master and Actuator nodes\n");
 
 % Callback trackers

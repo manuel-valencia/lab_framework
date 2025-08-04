@@ -13,6 +13,9 @@ classdef ProbeNodeManager < ExperimentManager
         noiseSigma       % Standard deviation of simulated sensor noise
         liveInput        % Latest wave field value received from waveGenNode
         isCollecting     % Flag used during running mode
+        duration         % Duration of current experiment
+        dt               % Time step size
+        currentStep      % Current step counter for duration tracking
 
         voltageDepthLog = [] % Store calibration data between calls
     end
@@ -59,24 +62,22 @@ classdef ProbeNodeManager < ExperimentManager
         end
 
         % Initialization
-        function initializeHardware(obj, ~)
+        function initializeHardware(obj, cfg)
             % initializeHardware - Initializes virtual probe simulation environment.
-            %
-            % Called once from superclass constructor after loading calibration gains.
-            % Responsible for setting up internal state and confirming bias status.
-        
+    
             fprintf("%s [INIT] Virtual probe hardware initialized. \n", obj.FSMtag);
-        
+    
             % Ensure buffer is empty at initialization
             obj.experimentData = [];
-        
+            obj.dt = cfg.dt;  % Sample step size from config
+            obj.currentStep = 1;
+    
             % Log calibration load result
             try
                 obj.log("INFO", sprintf("Probe initialized with bias table: depth = %.3f × voltage + %.3f", obj.biasTable.slope, obj.biasTable.intercept));
             catch
                 obj.log("INFO", sprintf("Probe initialized without bias table"));
             end
-            
         end
 
         % Configuration validator
@@ -93,6 +94,33 @@ classdef ProbeNodeManager < ExperimentManager
         
             % Optional logging for consistency
             obj.log("INFO", "ProbeNode configured (no constraints). Max measurable height: 20.0 cm");
+        end
+
+        function setupCurrentExperiment(obj)
+            % Call parent method for logging
+            setupCurrentExperiment@ExperimentManager(obj);
+            
+            % Clear experiment data for new experiment (but don't reset currentExperimentIndex)
+            obj.experimentData = [];
+            obj.isCollecting = false;
+            
+            % Get current experiment parameters for duration info
+            if isfield(obj.experimentSpec.params, 'experiments')
+                % Multi-experiment mode - get current experiment
+                currentParams = obj.experimentSpec.params.experiments(obj.currentExperimentIndex);
+            else
+                % Single experiment mode
+                currentParams = obj.experimentSpec.params;
+            end
+            
+            % Store duration for termination check
+            if isfield(currentParams, 'duration')
+                obj.duration = currentParams.duration;
+            else
+                obj.duration = 5.0; % fallback default
+            end
+            
+            obj.log("INFO", sprintf("ProbeNode configured for experiment duration: %.2f sec", obj.duration));
         end
 
         % Calibration Handler
@@ -174,14 +202,11 @@ classdef ProbeNodeManager < ExperimentManager
         
             fprintf("%s [RUN] handleRun() called: \n", obj.FSMtag);
             disp(cmd);
-        
+    
             obj.isCollecting = true;  % Enable sampling logic in .step()
-
-            obj.experimentData = [];
-        
+            obj.currentStep = 1;      % Reset step counter for this experiment
+    
             obj.log("INFO", "ProbeNode RUN started: beginning wave height data collection.");
-        
-            % Node remains in RUNNING; transition to POSTPROC will occur after run duration externally
         end
 
         % Test Mode Handler
@@ -227,21 +252,40 @@ classdef ProbeNodeManager < ExperimentManager
 
 
         % Loop Step Function
-        function step(obj, t, final)
+        function step(obj, t)
             % step - Executes one virtual sensing step if probe is collecting.
             % Applies linear calibration and noise, logs and publishes the result.
         
             if ~obj.isCollecting
                 return;  % No action outside of active phases
             end
-        
+    
+            % Check if we've reached the duration limit (duration-based termination)
+            currentTime = (obj.currentStep - 1) * obj.dt;
+            if currentTime >= obj.duration
+                obj.isCollecting = false;
+                switch obj.state
+                    case State.TESTINGSENSOR
+                        obj.transition(State.IDLE);
+                        obj.log("INFO", sprintf("ProbeNode test completed %.2fs duration. Returning to IDLE.", obj.duration));
+                    case State.RUNNING
+                        obj.transition(State.POSTPROC);
+                        obj.log("INFO", sprintf("ProbeNode completed %.2fs duration. Transitioned to POSTPROC.", obj.duration));
+                    otherwise
+                        obj.log("WARN", "Duration reached from unexpected state: " + string(obj.state));
+                        obj.transition(State.ERROR);
+                end
+                return;
+            end
+    
             % Simulate raw analog sensor input
-            voltage = obj.liveInput;
+            actualWaveHeight = obj.liveInput;
+            voltage = actualWaveHeight/100;
             noise = obj.noiseSigma * randn();
-        
+    
             % Apply calibrated transformation (depth = a * V + b)
             depth = obj.gainSlope * voltage + obj.gainIntercept + noise;
-        
+    
             % Construct data packet
             reading = struct( ...
                 "type", "wave_height", ...
@@ -249,33 +293,18 @@ classdef ProbeNodeManager < ExperimentManager
                 "units", "cm", ...
                 "timestamp", datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS') ...
             );
-        
+    
             % Append to data buffer
             obj.experimentData = [obj.experimentData; reading];
-        
+    
             % Publish to /data
             obj.comm.commPublish(obj.comm.getFullTopic("data"), jsonencode(reading));
-        
+    
             % Print (optional)
             fprintf("%s [STEP] t=%.2fs : Measured Depth: %.3f cm (raw=%.3f V)\n", ...
                 obj.FSMtag, t, depth, voltage);
-        
-            % Last data entry and will transition to new state
-            if final
-                obj.isCollecting = false;
-            
-                switch obj.state
-                    case State.TESTINGSENSOR
-                        obj.transition(State.IDLE);
-                        obj.log("INFO", "ProbeNode test complete. Returning to IDLE.");
-                    case State.RUNNING
-                        obj.transition(State.POSTPROC);
-                        obj.log("INFO", "Transitioned to POSTPROC after experiment run.");
-                    otherwise
-                        obj.log("WARN", "step(final=true) called from unexpected state: " + string(obj.state));
-                        obj.transition(State.ERROR);
-                end
-            end
+    
+            obj.currentStep = obj.currentStep + 1;
         end
 
         % Stop Handler
@@ -283,6 +312,7 @@ classdef ProbeNodeManager < ExperimentManager
             % stopHardware - Halts virtual data collection and resets probe flags.
             
             obj.isCollecting = false;
+            obj.currentStep = 1;
             obj.log("INFO", "ProbeNode stopped. Data collection halted.");
             fprintf("%s [STOP] ProbeNode: Data collection halted and system is idle. \n", obj.FSMtag);
         end
@@ -298,5 +328,7 @@ classdef ProbeNodeManager < ExperimentManager
             obj.voltageDepthLog = [];
             obj.log("INFO", "Sensor buffers cleared.");
         end
+        
+        
     end
 end

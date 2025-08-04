@@ -14,11 +14,6 @@ classdef CommClient < handle
     %   client.connect();
     %   client.publish('<clientID>/log', 'Hello');
     %
-    % TODO:
-    %   - Implement connect(), disconnect(), commPublish(), commSubscribe(), etc.
-    %   - Add internal heartbeat timer
-    %   - Add capped message log (ring buffer)
-    %   - Add optional callback handler for upstream routing
 
     properties
         clientID            % Required: unique string identifying this node
@@ -218,7 +213,7 @@ classdef CommClient < handle
             try
                 write(obj.mqttClient, topic, payload);
                 if obj.verbose
-                    fprintf('%s → "%s": %s\n', obj.tag, topic, payload);
+                    fprintf('%s → "%s": %s [%s]\n', obj.tag, topic, payload, string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSSS')));
                 end
             catch ME
                 if obj.verbose
@@ -305,7 +300,7 @@ classdef CommClient < handle
 
             % Print to console if verbose
             if obj.verbose
-                fprintf('%s ← "%s": %s\n', obj.tag, topic, msg);
+                fprintf('%s ← "%s": %s [%s]\n', obj.tag, topic, msg, string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSSS')));
             end
 
             % Forward to callback handler if defined

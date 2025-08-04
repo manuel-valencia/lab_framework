@@ -57,7 +57,7 @@ Notes:
 - Install dependencies with: pip install flask
 - Flask server should be launched with host="0.0.0.0" to enable LAN access
 - Port 5000 must be open on server firewall for cross-device communication
-- Data is saved into ./tempRestData/<clientID>/<experimentTag>.jsonl
+- Data is saved into ./network/tempRestData/<clientID>/<experimentTag>.jsonl
 
 ----------------------------------------------------------
 """
@@ -69,7 +69,7 @@ import json
 import shutil
 import glob
 
-TEMP_DIR = os.path.join(os.getcwd(), "tempRestData")
+TEMP_DIR = os.path.join(os.path.dirname(__file__), "tempRestData")
 if os.path.exists(TEMP_DIR):
     shutil.rmtree(TEMP_DIR)
 os.makedirs(TEMP_DIR, exist_ok=True)
