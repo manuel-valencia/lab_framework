@@ -1,12 +1,12 @@
 % =========================================================================
-% node.m
+% wavemaker_node.m
 %
-% Top‑level, headless node for MATLAB-based control in Tow‑Tank Framework.
+% Top‑level, headless wave maker node for MATLAB-based control in Tow‑Tank Framework.
 %
 % USAGE (from a bash script or systemd service)
-%   matlab -batch "node('config/my_node_config.json')"
+%   matlab -batch "wavemaker_node('config/wavemaker_config.json')"
 %
-% * cfgFile is a JSON file that holds MQTT credentials, hardware
+% * cfgFile is a JSON file that holds MQTT credentials, wave maker hardware
 %   parameters, and safety limits (see documentation).
 %
 % * All shared MATLAB framework code lives in matlabCommon/.
@@ -14,42 +14,46 @@
 % * The node writes a timestamped log file to logs/.
 %
 % =========================================================================
-function node(cfgFile)
+function wavemaker_node(cfgFile)
     arguments
-        cfgFile (1,1) string  % e.g. "config/my_node_config.json"
+        cfgFile (1,1) string  % e.g. "config/wavemaker_config.json"
     end
     
-    % CONFIGURATION FILE FORMAT:
+    % WAVE MAKER CONFIGURATION FILE FORMAT:
     % Your JSON config file should contain at minimum:
     % {
-    %   "clientID": "myNodeName",
+    %   "clientID": "waveMakerNode",
     %   "brokerAddress": "localhost",
     %   "brokerPort": 1883,
     %   "restPort": 5000,
     %   "hardware": {
     %     "hasSensor": true,
-    %     "hasActuator": false
+    %     "hasActuator": true,
+    %     "maxAmplitude": 0.1,
+    %     "maxFrequency": 2.0,
+    %     "paddleController": "servo_type_here",
+    %     "positionSensor": "encoder_type_here"
     %   },
     %   "verbose": true
     % }
     % See matlabCommon/README.md for complete configuration reference.
 
     %% 0.  Bootstrap – path & logging
-    repoRoot = fileparts(mfilename('fullpath'));      % repo/node_scafolding_matlab/...
+    repoRoot = fileparts(mfilename('fullpath'));      % repo/wavemaker_node/...
     addpath(genpath(fullfile(repoRoot, '..', 'matlabCommon')));
     logDir   = fullfile(repoRoot, "logs");
     if ~isfolder(logDir); mkdir(logDir); end
 
     ts = char(datetime("now",'Format','yyyyMMdd-HHmmss'));
-    diary(fullfile(logDir, "node_" + ts + ".txt"));
+    diary(fullfile(logDir, "wavemaker_node_" + ts + ".txt"));
     cleanupDiary = onCleanup(@() diary('off'));
 
-    disp("[INFO] Node booting…  " + ts);
+    disp("[INFO] Wave Maker Node booting…  " + ts);
     dbstop if error
 
     %% 1. Load configuration
     cfg = jsondecode(fileread(cfgFile));
-    disp("[INFO] Configuration loaded from " + cfgFile);
+    disp("[INFO] Wave maker configuration loaded from " + cfgFile);
     
     % Validate required configuration fields
     requiredFields = ["clientID", "brokerAddress"];
@@ -58,40 +62,49 @@ function node(cfgFile)
             error("[ERROR] Missing required configuration field: %s", field);
         end
     end
+    
+    % Validate wave maker specific hardware configuration
+    if isfield(cfg, "hardware")
+        if ~isfield(cfg.hardware, "hasActuator") || ~cfg.hardware.hasActuator
+            error("[ERROR] Wave maker node requires hasActuator = true in hardware configuration");
+        end
+    else
+        error("[ERROR] Missing hardware configuration section");
+    end
 
     %% 2. Initialize communication and FSM manager
     comm = CommClient(cfg);        % MQTT client for real-time commands and status
     rest = RestClient(cfg);        % REST client for large data transfers
-    mgr = MyNodeManager(cfg, comm, rest);
+    mgr = WaveMakerNodeManager(cfg, comm, rest);
 
     %% 3. Wire MQTT commands to state machine
     % Set the callback to route incoming MQTT messages to the FSM
     comm.onMessageCallback = @mgr.onMessageCallback;
 
     %% 4. Ensure graceful shutdown
-    finalizer = onCleanup(@() shutdownNode(comm, mgr));
+    finalizer = onCleanup(@() shutdownWaveMakerNode(comm, mgr));
 
     %% 5. Main blocking loop
-    disp("[INFO] Entering main loop …  Ctrl‑C to quit.");
+    disp("[INFO] Wave maker entering main loop …  Ctrl‑C to quit.");
     while comm.isOpen
         pause(0.001);
     end
-    disp("[INFO] Main loop exited – clean shutdown.");
+    disp("[INFO] Wave maker main loop exited – clean shutdown.");
 end
 
 % ----------------------------------------------------------------------------
 
-function shutdownNode(comm, mgr)
-    %SHUTDOWNNODE  Cleanup hardware and close MQTT connection
+function shutdownWaveMakerNode(comm, mgr)
+    %SHUTDOWNWAVEMAKERNODE  Cleanup wave maker hardware and close MQTT connection
     try
-        mgr.abort("Shutdown request");
+        mgr.abort("Wave maker shutdown request");
     catch ME
-        warning("Manager abort failed: %s", '%s', ME.message);
+        warning("Wave maker manager abort failed: %s", ME.message);
     end
 
     try
         comm.close();
     catch ME
-        warning("Comm close failed: %s", '%s', ME.message);
+        warning("Wave maker comm close failed: %s", ME.message);
     end
 end

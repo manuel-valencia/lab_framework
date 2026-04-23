@@ -52,6 +52,11 @@ tempRestData/
 # Local machine role config (each machine sets this individually)
 config/node_role.txt
 
+# Machine-specific config files (contain IPs, DAQ channel names, hardware limits)
+# Each machine fills in their own copy from the .example template
+config/master_computer.json
+config/carriage_computer.json
+
 # Logs and temp files
 /var/log/lab_framework_update.log
 

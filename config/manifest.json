@@ -1,14 +1,22 @@
 {
-  "master_node": {
-    "path": "master_node/",
-    "startup_script": "main.py"
+  "master_computer": {
+    "nodes": [
+      {
+        "path": "waveMakerProbe_node/",
+        "startup_script": "wavemaker_probe_node.m"
+      },
+      {
+        "path": "control_node/",
+        "startup_script": "main.py"
+      }
+    ]
   },
-  "carriage_node": {
-    "path": "carriage_node/",
-    "startup_script": "main.py"
-  },
-  "wavemaker_node": {
-    "path": "wavemaker_node/",
-    "startup_script": "main.py"
+  "carriage_computer": {
+    "nodes": [
+      {
+        "path": "carriage_node/",
+        "startup_script": "carriage_node.m"
+      }
+    ]
   }
 }
