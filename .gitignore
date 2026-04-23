@@ -69,6 +69,17 @@ config/node_registry.json
 
 logs/
 
+# JSONL log files (generated at runtime by node logging)
+*.jsonl
+
+# Generated node log and data directories (runtime outputs, machine-specific)
+**/*Logs/
+**/*NodeData/
+
+# Generated calibration files (produced by test/node runs, not source)
+**/calibrationGains.mat
+**/carriageCalibration.mat
+
 # Test data and experiment outputs
 test/**/VirtualIntegrationTest/waveGenNodeData/
 test/**/VirtualIntegrationTest/*.csv
