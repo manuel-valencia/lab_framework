@@ -41,6 +41,7 @@ classdef (Abstract) ExperimentManager < handle
         currentExperimentIndex      % Index of the current experiment in multi-experiment mode
         FSMtag                      % Precomputed logging FSMtag, e.g., '[FSM:clientID]'
         cmd                         % Command string for current operation
+        logDir                      % Folder path for commLog / fsmLog output
     end
 
     %==================================================================
@@ -71,6 +72,7 @@ classdef (Abstract) ExperimentManager < handle
             obj.rest = rest;
             obj.state = State.BOOT;
             obj.history = "BOOT";
+            obj.logDir = sprintf('%sLogs', cfg.clientID);  % default; subclasses may override
 
             obj.FSMtag = sprintf('[FSM:%s]', obj.comm.clientID);
 
@@ -218,6 +220,11 @@ classdef (Abstract) ExperimentManager < handle
             biasTable = obj.biasTable;
         end
 
+        function data = getExperimentData(obj)
+            % getExperimentData: Returns the experimentData struct array from the last run.
+            data = obj.experimentData;
+        end
+
         function log(obj, level, msg)
             % log - Unified logging method for nodes.
             % Sends to CommClient's /log topic and stores in messageLog buffer.
@@ -284,10 +291,10 @@ classdef (Abstract) ExperimentManager < handle
             obj.shutdownHardware();
         
             % Step 2: Create per-node log folder
-            logDir = sprintf('%sLogs', obj.cfg.clientID);
-            if ~exist(logDir, 'dir')
-                mkdir(logDir);
+            if ~exist(obj.logDir, 'dir')
+                mkdir(obj.logDir);
             end
+            logDir = obj.logDir;
         
             % Step 3: Save CommClient MQTT message log
             logPath = fullfile(logDir, sprintf('%s_commLog.jsonl', obj.cfg.clientID));

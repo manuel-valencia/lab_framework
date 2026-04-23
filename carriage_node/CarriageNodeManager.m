@@ -16,7 +16,8 @@ classdef CarriageNodeManager < ExperimentManager
     % Calibration (force bias):
     %   {"cmd":"Calibrate","params":{"target":"force_bias"}}
     %   → 1-second read with test body ALREADY ATTACHED
-    %   → saves biasVoltages (1x6) to calibrationGains.mat
+    %   → saves biasVoltages (1x6) to carriageCalibration.mat
+    %   Force bias is also collected automatically before every Test and Run.
     %   The manufacturer RunTimeMatrix is NEVER recalibrated.
     %
     % Calibration (motion sensors, interactive per session):
@@ -24,7 +25,7 @@ classdef CarriageNodeManager < ExperimentManager
     %                                "channel":"heave","knownValue_mm":2.5}}
     %   Repeat for each known position on each channel (heave/pitch/roll).
     %   {"cmd":"Calibrate","params":{"target":"motion_sensors","finished":true}}
-    %   → fits spline lookup tables, saves motionCalibration.mat
+    %   → fits spline lookup tables, saves carriageCalibration.mat
     %
     % Run:
     %   Acquires raw 10-channel data for the experiment duration.
@@ -33,6 +34,7 @@ classdef CarriageNodeManager < ExperimentManager
     %
     % Required file (create once by running createRunTimeMatrix.m):
     %   carriage_node/carriageNodeRunTimeMatrix.mat  (variable: RunTimeMatrix)
+    %   This is the manufacturer decoupling matrix for the ATI sensor.
 
     properties
         % Manufacturer decoupling matrix — loaded at startup, never recalibrated
@@ -40,6 +42,7 @@ classdef CarriageNodeManager < ExperimentManager
 
         % Force bias — measured 1-second read with test body attached
         biasVoltages        % 1x6 double, one offset per SG channel
+        calibrationFile     % Full path to carriageCalibration.mat
 
         % Motion sensor spline calibration (filled by handleCalibrate)
         motionCalib         % struct: .heave/.pitch/.roll, each with .V and .D arrays
@@ -71,25 +74,30 @@ classdef CarriageNodeManager < ExperimentManager
             obj.motionCalibBuffer = struct('heave', [], 'pitch', [], 'roll', []);
             obj.motionCalib       = struct();
 
-            % Load force bias if previously saved
-            if isfile('calibrationGains.mat')
-                loaded = load('calibrationGains.mat', 'biasVoltages');
+            % Calibration file and log folder — anchored to this class file's folder
+            % so the mock subclass can override them to point to test/carriage_node/ instead.
+            nodeDir = fileparts(mfilename('fullpath'));
+            obj.calibrationFile = fullfile(nodeDir, 'carriageCalibration.mat');
+            obj.logDir          = fullfile(nodeDir, 'carriageNodeLogs');
+
+            % Load saved calibration (force bias + motion sensors) from single file
+            if isfile(obj.calibrationFile)
+                loaded = load(obj.calibrationFile);
                 if isfield(loaded, 'biasVoltages')
                     obj.biasVoltages = loaded.biasVoltages;
                     obj.log("INFO", sprintf("Force bias loaded: [%s]", ...
-                        strjoin(arrayfun(@(v) sprintf("%.5f", v), obj.biasVoltages, 'UniformOutput', false), ', ')));
+                        strjoin(arrayfun(@(v) sprintf('%.5f', v), obj.biasVoltages, 'UniformOutput', false), ', ')));
+                else
+                    obj.log("WARN", "carriageCalibration.mat found but contains no biasVoltages.");
+                end
+                if isfield(loaded, 'motionCalib')
+                    obj.motionCalib = loaded.motionCalib;
+                    obj.log("INFO", "Motion calibration loaded.");
+                else
+                    obj.log("WARN", "carriageCalibration.mat found but contains no motionCalib. Run motion_sensors calibration.");
                 end
             else
-                obj.log("WARN", "No force bias file found. Run force_bias calibration before first experiment.");
-            end
-
-            % Load motion calibration if previously saved
-            if isfile('motionCalibration.mat')
-                mc = load('motionCalibration.mat', 'motionCalib');
-                obj.motionCalib = mc.motionCalib;
-                obj.log("INFO", "Motion calibration loaded.");
-            else
-                obj.log("WARN", "No motion calibration found. Run motion_sensors calibration before first experiment.");
+                obj.log("WARN", "No carriageCalibration.mat found. Run force_bias and motion_sensors calibration before first experiment.");
             end
 
             obj.log("INFO", "CarriageNodeManager initialized.");
@@ -206,14 +214,7 @@ classdef CarriageNodeManager < ExperimentManager
                 target = string(cmd.params.target);
 
                 if target == "force_bias"
-                    obj.log("INFO", "Calibrating force bias — reading 1 s with test body attached...");
-                    biasData = read(obj.daqSession, seconds(1));
-                    biasArr  = mean(table2array(biasData), 1);  % 1x10 mean voltages
-                    obj.biasVoltages = biasArr(1:6);            % cols 1-6 = SG0-SG5
-                    biasVoltages = obj.biasVoltages;
-                    save("calibrationGains.mat", "biasVoltages");
-                    obj.log("INFO", sprintf("Force bias saved: [%s]", ...
-                        strjoin(arrayfun(@(v) sprintf("%.5f", v), obj.biasVoltages, 'UniformOutput', false), ', ')));
+                    obj.collectForceBias();
                     obj.transition(State.IDLE);
 
                 elseif target == "motion_sensors"
@@ -235,9 +236,8 @@ classdef CarriageNodeManager < ExperimentManager
                         end
 
                         if fitted > 0
-                            motionCalib = obj.motionCalib;
-                            save("motionCalibration.mat", "motionCalib");
-                            obj.log("INFO", sprintf("motionCalibration.mat saved (%d channels).", fitted));
+                            obj.saveCarriageCalibration();
+                            obj.log("INFO", sprintf("carriageCalibration.mat saved (%d motion channels).", fitted));
                         else
                             obj.log("WARN", "Motion calibration: no channels had enough data. Nothing saved.");
                         end
@@ -278,26 +278,54 @@ classdef CarriageNodeManager < ExperimentManager
             end
         end
 
-        function handleTest(obj, cmd)
+        function handleTest(obj, cmd) %#ok<INUSD>
             % handleTest
-            % Streams live RunTimeMatrix-decoupled force readings while in TESTINGSENSOR.
-            % Publishes one struct per scan to carriageNode/data.
-            % Runs until the FSM state changes (e.g. a Reset command is received).
+            % Collects a fresh force bias then starts a MATLAB timer that fires
+            % at the DAQ sample rate. Each tick reads one scan from the DAQ,
+            % decouples with the RunTimeMatrix, and publishes to carriageNode/data.
+            % handleTest returns immediately so the MQTT thread stays free to
+            % receive the Reset command. The timer stops itself once the FSM
+            % state leaves TESTINGSENSOR (set by the incoming Reset).
 
-            obj.log("INFO", "handleTest: streaming live force readings. Send Reset to stop.");
+            obj.log("INFO", "handleTest: collecting fresh force bias before streaming...");
+            obj.collectForceBias();
+            obj.log("INFO", "handleTest: starting sensor stream timer. Send Reset to stop.");
 
-            if isempty(obj.biasVoltages)
-                obj.log("WARN", "No force bias loaded — using zero bias. Results uncorrected.");
-                bias = zeros(1, 6);
-            else
-                bias = obj.biasVoltages;
+            bias = obj.biasVoltages;
+
+            % Read 5 scans per tick at 50 Hz → timer period = 100 ms.
+            % Reading 1 scan at a time would make the DAQ read itself take ~20 ms
+            % (one sample period), leaving no margin before the next 20 ms tick.
+            % Reading a small block gives the timer ~80 ms of headroom and keeps
+            % the effective publish rate at 10 Hz — sufficient for live diagnostics.
+            blockSize = 5;
+            period    = blockSize / obj.sampleRate;   % 0.1 s at 50 Hz
+
+            t = timer( ...
+                'ExecutionMode', 'fixedRate', ...
+                'Period',        period, ...
+                'BusyMode',      'drop', ...
+                'TimerFcn',      @(~,~) obj.streamOneScan(bias, blockSize), ...
+                'StopFcn',       @(src,~) delete(src));
+            start(t);
+        end
+
+        function streamOneScan(obj, bias, blockSize)
+            % streamOneScan  — timer callback for handleTest.
+            % Reads blockSize DAQ scans, decouples each, publishes mean as one
+            % reading. Stops the timer when the FSM leaves TESTINGSENSOR.
+            if obj.state ~= State.TESTINGSENSOR
+                tList = timerfind('TimerFcn', []);
+                for k = 1:numel(tList)
+                    stop(tList(k));
+                end
+                return;
             end
-
-            while obj.state == State.TESTINGSENSOR
-                rawRead = read(obj.daqSession, 1);     % 1 scan
-                rawArr  = table2array(rawRead);         % 1x10
-                SG_corrected = rawArr(1:6) - bias;      % bias subtraction
-                FT = obj.runTimeMatrix * SG_corrected'; % 6x1 → Fx,Fy,Fz,Mx,My,Mz
+            try
+                rawRead = read(obj.daqSession, blockSize);
+                rawArr  = mean(table2array(rawRead), 1);   % mean over block → 1x10
+                SG_corrected = rawArr(1:6) - bias;
+                FT = obj.runTimeMatrix * SG_corrected';
                 reading = struct( ...
                     'type',      'force', ...
                     'Fx',        FT(1), ...
@@ -309,15 +337,19 @@ classdef CarriageNodeManager < ExperimentManager
                     'units',     'lb_lbin', ...
                     'timestamp', string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS')));
                 obj.comm.commPublish(obj.comm.getFullTopic("data"), jsonencode(reading));
+            catch ME
+                obj.log("WARN", sprintf("streamOneScan error: %s", ME.message));
             end
         end
 
         function handleRun(obj, cmd)
             % handleRun
-            % Reads raw 10-channel DAQ data for the experiment duration.
-            % No processing is done here — all bias subtraction, RunTimeMatrix
-            % multiplication, filtering, and motion calibration happen in
-            % enterPostProc so that raw data is always preserved.
+            % Collects a fresh force bias (water ingress between runs), then reads
+            % raw 10-channel DAQ data for the experiment duration.
+            % All further processing happens in enterPostProc.
+
+            obj.log("INFO", "handleRun: collecting fresh force bias before acquisition...");
+            obj.collectForceBias();
 
             obj.isCollecting = true;
             obj.log("INFO", sprintf("handleRun: acquiring %.1f s at %d Hz...", ...
@@ -329,6 +361,10 @@ classdef CarriageNodeManager < ExperimentManager
             obj.log("INFO", "handleRun: acquisition complete.");
             obj.transition(State.POSTPROC);
         end
+
+    end
+
+    methods (Access = protected)
 
         function enterPostProc(obj)
             % enterPostProc (override)
@@ -422,6 +458,35 @@ classdef CarriageNodeManager < ExperimentManager
             % Hand off to base class: saves CSV, POSTs to REST, handles state transition
             enterPostProc@ExperimentManager(obj);
         end
+
+        function collectForceBias(obj)
+            % collectForceBias
+            % Reads 1 second of DAQ data and stores the mean SG voltages (cols 1-6)
+            % as the force bias. Saves to carriageCalibration.mat alongside any
+            % existing motion calibration data.
+            % Called automatically before every Test and Run, and by handleCalibrate
+            % when target == "force_bias".
+            obj.log("INFO", "collectForceBias: reading 1 s with test body attached...");
+            biasData         = read(obj.daqSession, seconds(1));
+            biasArr          = mean(table2array(biasData), 1);  % 1x10 mean voltages
+            obj.biasVoltages = biasArr(1:6);                    % cols 1-6 = SG0-SG5
+            obj.saveCarriageCalibration();
+            obj.log("INFO", sprintf("Force bias collected: [%s]", ...
+                strjoin(arrayfun(@(v) sprintf('%.5f', v), obj.biasVoltages, 'UniformOutput', false), ', ')));
+        end
+
+        function saveCarriageCalibration(obj)
+            % saveCarriageCalibration
+            % Saves both biasVoltages and motionCalib into a single
+            % carriageCalibration.mat file so all calibration state is co-located.
+            biasVoltages = obj.biasVoltages; %#ok<PROPLC>
+            motionCalib  = obj.motionCalib;
+            save(obj.calibrationFile, "biasVoltages", "motionCalib");
+        end
+
+    end
+
+    methods (Access = public)
 
         function stopHardware(obj)
             obj.isCollecting = false;

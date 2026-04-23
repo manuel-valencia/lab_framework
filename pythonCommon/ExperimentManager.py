@@ -112,6 +112,7 @@ class ExperimentManager(ABC):
         
         # Logging setup
         self.fsm_tag = f"[FSM:{self.comm.client_id}]"
+        self.log_dir = f"{cfg['clientID']}Logs"  # default; subclasses may override
         
         # Cache capability flags locally (if provided)
         if "hardware" in cfg:
@@ -258,6 +259,15 @@ class ExperimentManager(ABC):
         """
         return self.bias_table
     
+    def get_experiment_data(self) -> Any:
+        """
+        Returns the experiment_data list from the last run.
+        
+        Returns:
+            List of experiment data records
+        """
+        return self.experiment_data
+    
     def log(self, level: str = "INFO", msg: str = "") -> None:
         """
         Unified logging method for nodes.
@@ -318,7 +328,7 @@ class ExperimentManager(ABC):
         self.shutdown_hardware()
         
         # Step 2: Create per-node log folder
-        log_dir = f"{self.cfg['clientID']}Logs"
+        log_dir = self.log_dir
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         

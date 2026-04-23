@@ -47,6 +47,11 @@ classdef MockCarriageNodeManager < CarriageNodeManager
 
         function obj = MockCarriageNodeManager(cfg, comm, rest)
             obj@CarriageNodeManager(cfg, comm, rest);
+            % Override file paths so saves/logs go to test/carriage_node/,
+            % not carriage_node/ (where the base class mfilename points).
+            testDir = fileparts(mfilename('fullpath'));
+            obj.calibrationFile = fullfile(testDir, 'carriageCalibration.mat');
+            obj.logDir          = fullfile(testDir, 'carriageNodeLogs');
             obj.log("INFO", "MockCarriageNodeManager active — DAQ I/O is synthetic.");
         end
 
@@ -133,6 +138,26 @@ classdef MockCarriageNodeManager < CarriageNodeManager
             end
         end
 
+    end
+
+    methods (Access = protected)
+
+        % ------------------------------------------------------------------
+        % Override collectForceBias — synthetic version (no real DAQ)
+        % ------------------------------------------------------------------
+        function collectForceBias(obj)
+            tt = obj.generateSyntheticTimetable(obj.sampleRate);
+            biasArr          = mean(table2array(tt), 1);  % 1x10
+            obj.biasVoltages = biasArr(1:6);
+            obj.saveCarriageCalibration();
+            obj.log("INFO", sprintf("Mock force bias collected: [%s]", ...
+                strjoin(arrayfun(@(v) sprintf('%.5f',v), obj.biasVoltages, 'UniformOutput', false), ', ')));
+        end
+
+    end
+
+    methods
+
         % ------------------------------------------------------------------
         % Override handleCalibrate — inject synthetic data instead of DAQ
         % ------------------------------------------------------------------
@@ -140,14 +165,7 @@ classdef MockCarriageNodeManager < CarriageNodeManager
             target = string(cmd.params.target);
 
             if target == "force_bias"
-                % Generate 1 s of data (sampleRate samples)
-                tt = obj.generateSyntheticTimetable(obj.sampleRate);
-                biasArr = mean(table2array(tt), 1);   % 1x10
-                obj.biasVoltages = biasArr(1:6);
-                biasVoltages = obj.biasVoltages; %#ok<NASGU>
-                save("calibrationGains.mat", "biasVoltages");
-                obj.log("INFO", sprintf("Mock force_bias saved: [%s]", ...
-                    strjoin(arrayfun(@(v) sprintf("%.5f",v), obj.biasVoltages, 'UniformOutput', false), ', ')));
+                obj.collectForceBias();
                 obj.transition(State.IDLE);
 
             elseif target == "motion_sensors"
@@ -185,15 +203,18 @@ classdef MockCarriageNodeManager < CarriageNodeManager
         % Override handleTest — inject synthetic data for the read(1) call
         % ------------------------------------------------------------------
         function handleTest(obj, cmd) %#ok<INUSD>
-            obj.log("INFO", "Mock handleTest: streaming synthetic force readings. Send Reset to stop.");
+            obj.log("INFO", "Mock handleTest: collecting fresh force bias before streaming...");
+            obj.collectForceBias();
 
-            if isempty(obj.biasVoltages)
-                bias = zeros(1, 6);
-            else
-                bias = obj.biasVoltages;
-            end
+            % Publish a fixed 0.5 s burst (nStream samples) then return to IDLE.
+            % A blocking while-loop cannot work here: the MQTT callback runs on
+            % the main MATLAB thread, so a loop would prevent the Reset command
+            % from ever being processed.
+            nStream = round(obj.sampleRate * 0.5);   % 25 samples at 50 Hz
+            obj.log("INFO", sprintf("Mock handleTest: publishing %d synthetic force readings, then returning to IDLE.", nStream));
+            bias = obj.biasVoltages;
 
-            while obj.state == State.TESTINGSENSOR
+            for k = 1:nStream
                 tt     = obj.generateSyntheticTimetable(1);
                 rawArr = table2array(tt);              % 1x10
                 SG_corrected = rawArr(1:6) - bias;
@@ -207,16 +228,22 @@ classdef MockCarriageNodeManager < CarriageNodeManager
                     'My',        FT(5), ...
                     'Mz',        FT(6), ...
                     'units',     'lb_lbin', ...
+                    'sampleIdx', k, ...
                     'timestamp', string(datetime('now','Format','yyyy-MM-dd HH:mm:ss.SSS')));
                 obj.comm.commPublish(obj.comm.getFullTopic("data"), jsonencode(reading));
-                pause(1 / obj.sampleRate);   % pace to nominal sample rate
             end
+
+            obj.transition(State.IDLE);
+            obj.log("INFO", "Mock handleTest: streaming complete, returned to IDLE.");
         end
 
         % ------------------------------------------------------------------
         % Override handleRun — synthetic rawData, then real enterPostProc
         % ------------------------------------------------------------------
         function handleRun(obj, cmd) %#ok<INUSD>
+            obj.log("INFO", "Mock handleRun: collecting fresh force bias before acquisition...");
+            obj.collectForceBias();
+
             obj.isCollecting = true;
             nSamples = round(obj.duration * obj.sampleRate);
 

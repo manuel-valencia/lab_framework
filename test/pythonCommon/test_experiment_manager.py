@@ -390,6 +390,29 @@ class TestExperimentManager:
         # Check that REST client was called
         mock_rest.send_data.assert_called_once()
     
+    def test_get_experiment_data(self, setup_manager):
+        """Test get_experiment_data public getter returns experiment_data"""
+        mgr, mock_comm, mock_rest = setup_manager
+        
+        # Initially empty
+        assert mgr.get_experiment_data() == []
+        
+        # After populating
+        mock_data = [
+            {"time": 1.0, "value": 10.5},
+            {"time": 2.0, "value": 11.2}
+        ]
+        mgr.experiment_data = mock_data
+        
+        result = mgr.get_experiment_data()
+        assert result == mock_data
+        assert len(result) == 2
+    
+    def test_log_dir_default(self, setup_manager):
+        """Test that log_dir defaults to clientIDLogs"""
+        mgr, mock_comm, mock_rest = setup_manager
+        assert mgr.log_dir == "TestNodeLogs"
+    
     def test_message_callback_routing(self, setup_manager):
         """Test MQTT message callback routing"""
         mgr, mock_comm, mock_rest = setup_manager

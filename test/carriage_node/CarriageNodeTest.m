@@ -54,9 +54,9 @@ addpath(genpath(fullfile(repoRoot, 'carriage_node')));
 addpath(genpath(testDir));
 
 % ── DIARY ─────────────────────────────────────────────────────────────────
-ts = char(datetime('now','Format','yyyyMMdd-HHmmss'));
-diaryFile = fullfile(testDir, sprintf('CarriageNodeTest_%s.log', ts));
-fid = fopen(diaryFile, 'w'); if fid ~= -1; fclose(fid); end
+% Fixed filename — overwritten each run so only the latest log is kept.
+diaryFile = fullfile(testDir, 'CarriageNodeTest.log');
+fid = fopen(diaryFile, 'w'); if fid ~= -1; fclose(fid); end  % truncate
 diary(diaryFile);
 cleanupDiary = onCleanup(@() diary('off')); %#ok<NASGU>
 
@@ -149,6 +149,7 @@ cfgCtrl = struct( ...
 nodeComm = CommClient(cfg);
 nodeRest = RestClient(cfg);
 ctrlComm = CommClient(cfgCtrl);
+ctrlComm.connect();
 ctrlRest = RestClient(cfgCtrl);  %#ok<NASGU>
 
 % Instantiate node
@@ -199,8 +200,14 @@ if RUN_TESTS.forceCalib
 
     publish(ctrlComm, nodeCmd, struct('cmd','Calibrate','params',struct('target','force_bias')));
 
+    % Wait for FSM to return to IDLE (callback is asynchronous)
+    tWait = tic;
+    while string(node.getState()) ~= "IDLE" && toc(tWait) < 5
+        pause(0.05);
+    end
+
     passed1 = string(node.getState()) == "IDLE";
-    passed2 = isfile('calibrationGains.mat');
+    passed2 = isfile(fullfile(testDir, 'carriageCalibration.mat'));
     passed3 = ~isempty(node.biasVoltages) && numel(node.biasVoltages) == 6;
 
     nPass = nPass + passed1; nFail = nFail + ~passed1;
@@ -208,12 +215,24 @@ if RUN_TESTS.forceCalib
     nPass = nPass + passed3; nFail = nFail + ~passed3;
 
     logResult("Returns to IDLE after force_bias", passed1);
-    logResult("calibrationGains.mat created", passed2);
+    logResult("carriageCalibration.mat created (test/carriage_node/)", passed2);
     logResult("biasVoltages populated (1×6)", passed3);
 
     if passed3
         fprintf("  biasVoltages: [%s]\n", ...
-            strjoin(arrayfun(@(v) sprintf("%.5f",v), node.biasVoltages,'UniformOutput',false), ', '));
+            strjoin(arrayfun(@(v) sprintf('%.5f',v), node.biasVoltages,'UniformOutput',false), ', '));
+    end
+
+    % ── Real-hardware visual confirmation ─────────────────────────────────
+    if ~USE_MOCK && passed3
+        figure('Name','T2: Force Bias Voltages');
+        bar(node.biasVoltages);
+        set(gca, 'XTickLabel', {'SG0','SG1','SG2','SG3','SG4','SG5'});
+        yline(0, 'k--');
+        xlabel('Strain Gauge Channel'); ylabel('Bias Voltage (V)');
+        title('T2: Force Bias — inspect for small symmetric offsets near zero');
+        grid on;
+        input('[REAL] Inspect bias plot. Close figure then press Enter to continue...');
     end
 end
 
@@ -246,8 +265,14 @@ if RUN_TESTS.motionCalib
     publish(ctrlComm, nodeCmd, struct('cmd','Calibrate','params',struct( ...
         'target','motion_sensors','finished',true)));
 
+    % Wait for FSM to return to IDLE
+    tWait = tic;
+    while string(node.getState()) ~= "IDLE" && toc(tWait) < 5
+        pause(0.05);
+    end
+
     passed1 = string(node.getState()) == "IDLE";
-    passed2 = isfile('motionCalibration.mat');
+    passed2 = isfile(fullfile(testDir, 'carriageCalibration.mat'));
     passed3 = ~isempty(fieldnames(node.motionCalib)) && ...
               isfield(node.motionCalib,'heave') && ...
               isfield(node.motionCalib,'pitch') && ...
@@ -258,8 +283,31 @@ if RUN_TESTS.motionCalib
     nPass = nPass + passed3; nFail = nFail + ~passed3;
 
     logResult("Returns to IDLE after motion calib", passed1);
-    logResult("motionCalibration.mat created", passed2);
+    logResult("carriageCalibration.mat created (test/carriage_node/)", passed2);
     logResult("motionCalib has heave/pitch/roll fields", passed3);
+
+    % ── Real-hardware visual confirmation ─────────────────────────────────
+    if ~USE_MOCK && passed3
+        chNames   = {'heave','pitch','roll'};
+        chLabels  = {'Heave','Pitch','Roll'};
+        figure('Name','T3: Motion Sensor Spline Calibration');
+        for ci = 1:3
+            ch  = chNames{ci};
+            cal = node.motionCalib.(ch);
+            % Fine voltage range for smooth curve
+            vFine = linspace(min(cal.V), max(cal.V), 200);
+            dFit  = interp1(cal.V, cal.D, vFine, 'linear', 'extrap');
+            subplot(1, 3, ci);
+            plot(vFine, dFit, 'b-', 'LineWidth', 1.5); hold on;
+            scatter(cal.V, cal.D, 60, 'ro', 'filled');
+            xlabel('Sensor Voltage (V)'); ylabel('Position (mm)');
+            title(sprintf('%s (%d pts)', chLabels{ci}, numel(cal.V)));
+            legend('Fitted spline','Cal points','Location','best');
+            grid on;
+        end
+        sgtitle('T3: Motion Sensor Spline — verify monotonic, passes through each point');
+        input('[REAL] Inspect spline plots. Close figure then press Enter to continue...');
+    end
 end
 
 % =========================================================================
@@ -268,25 +316,91 @@ end
 if RUN_TESTS.sensorTest
     fprintf("\n=== T4: Sensor Test (streaming) ===\n");
 
+    % ── Real hardware: capture stream into a buffer via ctrlComm callback ──
+    if ~USE_MOCK
+        % containers.Map is a handle object — the closure captures it by
+        % reference, so storeStreamMsg can append to it from the callback.
+        streamStore = containers.Map('KeyType','int32','ValueType','any');
+        streamStore(0) = {};
+        ctrlComm.onMessageCallback = @(topic, msg) storeStreamMsg(streamStore, topic, msg);
+    end
+
     publish(ctrlComm, nodeCmd, struct('cmd','Test','params',struct('target','sensor')));
 
-    passed1 = string(node.getState()) == "TESTINGSENSOR";
-    nPass = nPass + passed1; nFail = nFail + ~passed1;
-    logResult("Enters TESTINGSENSOR", passed1);
-
-    if ~USE_MOCK
-        fprintf("[REAL] Observing live force data for 3 seconds...\n");
+    % Mock: synchronous 25-sample burst, self-transitions to IDLE.
+    % Real: timer-driven stream — wait 3 s then send Reset.
+    if USE_MOCK
+        tWait = tic;
+        while string(node.getState()) ~= "IDLE" && toc(tWait) < 5
+            pause(0.05);
+        end
+        passed1 = string(node.getState()) == "IDLE";
+        nPass = nPass + passed1; nFail = nFail + ~passed1;
+        logResult("Mock streams 25 readings and returns to IDLE", passed1);
     else
-        fprintf("[MOCK] Streaming synthetic force readings for 0.5 s...\n");
+        fprintf("[REAL] Streaming live force data for 3 seconds...\n");
+        pause(3);
+        publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
+        tWait = tic;
+        while string(node.getState()) ~= "IDLE" && toc(tWait) < 5
+            pause(0.05);
+        end
+        ctrlComm.onMessageCallback = [];   % stop capturing
+
+        passed1 = string(node.getState()) == "IDLE";
+        nPass = nPass + passed1; nFail = nFail + ~passed1;
+        logResult("Returns to IDLE after Reset", passed1);
+
+        % ── Parse captured messages and plot ──────────────────────────────
+        rawMsgs = streamStore(0);
+        nMsgs   = numel(rawMsgs);
+        if nMsgs > 0
+            tVec = zeros(nMsgs,1);
+            Fx   = zeros(nMsgs,1);
+            Fy   = zeros(nMsgs,1);
+            Fz   = zeros(nMsgs,1);
+            valid = false(nMsgs,1);
+            for mi = 1:nMsgs
+                entry = rawMsgs{mi};
+                % entry{1}=topic, entry{2}=JSON string
+                if contains(entry{1}, '/data')
+                    try
+                        r = jsondecode(entry{2});
+                        if isfield(r,'Fx') && isfield(r,'Fz')
+                            tVec(mi) = mi;   % sample index as proxy for time
+                            Fx(mi)   = r.Fx;
+                            Fy(mi)   = r.Fy;
+                            Fz(mi)   = r.Fz;
+                            valid(mi) = true;
+                        end
+                    catch
+                    end
+                end
+            end
+            tVec = tVec(valid); Fx = Fx(valid); Fy = Fy(valid); Fz = Fz(valid);
+            if ~isempty(tVec)
+                figure('Name','T4: Live Force Stream');
+                plot(tVec, Fx, 'b', tVec, Fy, 'g', tVec, Fz, 'r', 'LineWidth', 1.2);
+                legend('Fx','Fy','Fz','Location','best');
+                xlabel('Sample index'); ylabel('Force (lb)');
+                title(sprintf('T4: Live sensor stream — %d readings captured', numel(tVec)));
+                grid on;
+                fprintf("[REAL] %d force readings plotted.\n", numel(tVec));
+                input('[REAL] Inspect stream plot. Close figure then press Enter to continue...');
+            else
+                fprintf("[WARN] T4: no /data messages captured — check carriageNode/data subscription.\n");
+            end
+        else
+            fprintf("[WARN] T4: stream buffer empty.\n");
+        end
     end
-    pause(0.5);   % allow a few published readings to accumulate
+end
 
-    % Reset back to IDLE
-    publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
-
-    passed2 = string(node.getState()) == "IDLE";
-    nPass = nPass + passed2; nFail = nFail + ~passed2;
-    logResult("Returns to IDLE after Reset", passed2);
+% Helper used by T4 ctrlComm callback to store incoming stream messages.
+% containers.Map is a handle object so the closure captures it by reference.
+function storeStreamMsg(store, topic, msg)
+    existing    = store(0);
+    store(0)    = [existing; {{topic, msg}}];
 end
 
 % =========================================================================
@@ -307,6 +421,12 @@ if RUN_TESTS.singleRun
 
     publish(ctrlComm, nodeCmd, struct('cmd','Run','params',experimentParams));
 
+    % Wait for FSM to finish enterConfigureValidate and reach CONFIGUREPENDING
+    timeout = tic;
+    while string(node.getState()) ~= "CONFIGUREPENDING" && toc(timeout) < 2
+        pause(0.05);
+    end
+
     passed1 = string(node.getState()) == "CONFIGUREPENDING";
     nPass = nPass + passed1; nFail = nFail + ~passed1;
     logResult("Enters CONFIGUREPENDING after Run", passed1);
@@ -320,9 +440,10 @@ if RUN_TESTS.singleRun
     end
 
     passed2 = string(node.getState()) == "IDLE";
-    passed3 = ~isempty(node.experimentData);
-    passed4 = isfield(node.experimentData(1), 'Fx') && isfield(node.experimentData(1), 'Fz');
-    passed5 = isfield(node.experimentData(1), 'Heave_mm') && isfield(node.experimentData(1), 'Sync');
+    expData = node.getExperimentData();
+    passed3 = ~isempty(expData);
+    passed4 = passed3 && isfield(expData(1), 'Fx') && isfield(expData(1), 'Fz');
+    passed5 = passed3 && isfield(expData(1), 'Heave_mm') && isfield(expData(1), 'Sync');
 
     nPass = nPass + passed2; nFail = nFail + ~passed2;
     nPass = nPass + passed3; nFail = nFail + ~passed3;
@@ -335,12 +456,12 @@ if RUN_TESTS.singleRun
     logResult("Motion and Sync fields present", passed5);
 
     % --- Plot output ---
-    if ~isempty(node.experimentData)
-        nTime    = [node.experimentData.nTime];
-        Fx       = [node.experimentData.Fx];
-        Fz       = [node.experimentData.Fz];
-        Heave    = [node.experimentData.Heave_mm];
-        Sync     = [node.experimentData.Sync];
+    if ~isempty(expData)
+        nTime    = [expData.nTime];
+        Fx       = [expData.Fx];
+        Fz       = [expData.Fz];
+        Heave    = [expData.Heave_mm];
+        Sync     = [expData.Sync];
 
         figure('Name','T5: Single Run Output');
         sgtitle('T5: Carriage Node Single Run');
@@ -370,6 +491,12 @@ if RUN_TESTS.multiRun
     );
 
     publish(ctrlComm, nodeCmd, struct('cmd','Run','params',multiParams));
+
+    % Wait for FSM to validate all 3 experiments and reach CONFIGUREPENDING
+    timeout = tic;
+    while string(node.getState()) ~= "CONFIGUREPENDING" && toc(timeout) < 3
+        pause(0.05);
+    end
 
     passed1 = string(node.getState()) == "CONFIGUREPENDING";
     nPass = nPass + passed1; nFail = nFail + ~passed1;
@@ -410,34 +537,44 @@ if RUN_TESTS.abortRecovery
     publish(ctrlComm, nodeCmd, struct('cmd','Run','params', ...
         struct('name','AbortTest','duration',60,'frequency',1)));
 
+    timeout = tic;
+    while string(node.getState()) ~= "CONFIGUREPENDING" && toc(timeout) < 2
+        pause(0.05);
+    end
+
     passed1 = string(node.getState()) == "CONFIGUREPENDING";
     nPass = nPass + passed1; nFail = nFail + ~passed1;
     logResult("Reaches CONFIGUREPENDING before abort", passed1);
 
     publish(ctrlComm, nodeCmd, struct('cmd','RunValid'));
 
-    % Wait for RUNNING, then abort
-    timeout = tic;
-    while string(node.getState()) ~= "RUNNING" && toc(timeout) < 3
-        pause(0.05);
-    end
-
-    passed2 = string(node.getState()) == "RUNNING";
-    nPass = nPass + passed2; nFail = nFail + ~passed2;
-    logResult("Enters RUNNING state", passed2);
-
+    % Send Abort immediately after RunValid — don't wait for RUNNING.
+    % On mock, handleRun is synchronous so the node may already be IDLE by
+    % the time Abort is processed; Abort is valid from any state and always
+    % transitions to ERROR.  On real hardware, Abort will interrupt the run.
+    pause(0.05);
     publish(ctrlComm, nodeCmd, struct('cmd','Abort','params', ...
         struct('reason','T7 abort test')));
 
-    passed3 = string(node.getState()) == "ERROR";
-    nPass = nPass + passed3; nFail = nFail + ~passed3;
-    logResult("Transitions to ERROR after Abort", passed3);
+    timeout = tic;
+    while string(node.getState()) ~= "ERROR" && toc(timeout) < 5
+        pause(0.05);
+    end
+
+    passed2 = string(node.getState()) == "ERROR";
+    nPass = nPass + passed2; nFail = nFail + ~passed2;
+    logResult("Transitions to ERROR after Abort", passed2);
 
     publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
 
-    passed4 = string(node.getState()) == "IDLE";
-    nPass = nPass + passed4; nFail = nFail + ~passed4;
-    logResult("Recovers to IDLE after Reset", passed4);
+    timeout = tic;
+    while string(node.getState()) ~= "IDLE" && toc(timeout) < 2
+        pause(0.05);
+    end
+
+    passed3 = string(node.getState()) == "IDLE";
+    nPass = nPass + passed3; nFail = nFail + ~passed3;
+    logResult("Recovers to IDLE after Reset", passed3);
 end
 
 % =========================================================================
