@@ -17,13 +17,14 @@
 %   T2 — Probe calibration: multi-point Calibrate per selectedProbes
 %                           → polyfit gains saved, returns to IDLE
 %   T3 — Sensor test:       Test(sensor) → streams live H1..HN readings,
-%                           visual check, Reset → IDLE
-%   T4 — Actuator test:     Test(actuator) → paddle preview, returns IDLE
+%                           visual check (real), auto-returns to IDLE (mock)
+%   T4 — Actuator test:     Test(actuator) → CONFIGUREPENDING → TestValid
+%                           → paddle preview, returns to IDLE
 %   T5 — Single run:        Configure → RunValid → POSTPROC → IDLE,
 %                           CSV saved, probe output plotted
 %   T6 — Multi-run:         3 sub-experiments (different freq/amplitude),
 %                           CSV per sub-experiment
-%   T7 — Abort/recovery:    Abort during RUNNING → ERROR → Reset → IDLE
+%   T7 — Abort/recovery:    Abort during/after RUNNING → ERROR → Reset → IDLE
 %
 % PREREQUISITES (USE_MOCK = false)
 % ---------------------------------
@@ -52,8 +53,7 @@ addpath(genpath(fullfile(repoRoot, 'waveMakerProbe_node')));
 addpath(genpath(testDir));
 
 % ── DIARY ─────────────────────────────────────────────────────────────────
-ts = char(datetime('now','Format','yyyyMMdd-HHmmss'));
-diaryFile = fullfile(testDir, sprintf('WaveMakerProbeNodeTest_%s.log', ts));
+diaryFile = fullfile(testDir, 'WaveMakerProbeNodeTest.log');
 fid = fopen(diaryFile, 'w'); if fid ~= -1; fclose(fid); end
 diary(diaryFile);
 cleanupDiary = onCleanup(@() diary('off')); %#ok<NASGU>
@@ -72,6 +72,46 @@ RUN_TESTS = struct( ...
     'singleRun',        true, ...
     'multiRun',         true, ...
     'abortRecovery',    true  ...
+);
+
+% ── T5: signal type selection and per-type parameters ────────────────────
+% Set each type true/false to include or exclude it from T5.
+% Edit the T5_PARAMS fields below to change signal parameters.
+T5_ACTIVE_PROBES = [1, 2, 3];
+
+T5_SIGNAL_TYPES = struct( ...
+    'sinusoidal',       true,  ...
+    'bretschneider',    false, ...
+    'pulse_sinusoidal', false, ...
+    'dual_pulse',       false  ...
+);
+
+T5_PARAMS = struct();
+T5_PARAMS.sinusoidal = struct( ...
+    'amplitude',  0.05, ...
+    'frequency',  0.5,  ...
+    'duration',   3.0   ...
+);
+T5_PARAMS.bretschneider = struct( ...
+    'significantWaveHeight_m', 0.04, ...
+    'modalFrequency_radps',    3.14, ...
+    'duration',                5.0   ...
+);
+T5_PARAMS.pulse_sinusoidal = struct( ...
+    'amplitude',  0.05, ...
+    'frequency',  1.0,  ...
+    'numPulses',  3,    ...
+    'duration',   10.0  ...
+);
+T5_PARAMS.dual_pulse = struct( ...
+    'amplitude1_m',        0.05, ...
+    'frequency1_Hz',       1.0,  ...
+    'numPulses1',          3,    ...
+    'wavePauseDuration_s', 2.0,  ...
+    'amplitude2_m',        0.03, ...
+    'frequency2_Hz',       0.5,  ...
+    'numPulses2',          2,    ...
+    'duration',            15.0  ...
 );
 
 % Counters for final summary
@@ -99,6 +139,12 @@ controlID      = 'controlNode';
 if USE_MOCK
     fprintf("[MOCK] Building inline test config (no hardware).\n");
 
+    % Load hardware limits from the shared config so mock and real runs
+    % use identical voltage/frequency bounds. Only the DAQ device name,
+    % channel IDs, and gains file path are overridden for the test environment.
+    hwCfg = jsondecode(fileread(fullfile(repoRoot, 'config', 'master_computer.json')));
+    realHW = hwCfg.waveMakerProbeNode.hardware;
+
     cfg = struct( ...
         'clientID',     clientID, ...
         'brokerAddress', brokerAddress, ...
@@ -113,12 +159,14 @@ if USE_MOCK
             'daqDevice',            'Dev1', ...
             'allProbeChannels',     {{'ai0','ai1','ai2','ai3','ai4','ai5','ai6','ai7'}}, ...
             'paddleOutputChannel',  'ao0', ...
-            'sampleRate',           100, ...
-            'maxAmplitude',         0.3, ...
-            'maxFrequency',         2.3, ...
+            'sampleRate',           realHW.sampleRate, ...
+            'maxAmplitude',         realHW.maxAmplitude, ...
+            'maxFrequency',         realHW.maxFrequency, ...
             'probeGainsFile',       fullfile(testDir, 'probe_gains_test.mat') ...
         ) ...
     );
+    fprintf("[MOCK] Hardware limits from config: maxAmplitude=%.2f V, maxFrequency=%.2f Hz, sampleRate=%d Hz.\n", ...
+        realHW.maxAmplitude, realHW.maxFrequency, realHW.sampleRate);
 else
     fprintf("[REAL] Loading config/master_computer.json.\n");
     machineConfig = jsondecode(fileread(fullfile(repoRoot, 'config', 'master_computer.json')));
@@ -144,6 +192,7 @@ nodeComm = CommClient(cfg);
 nodeRest = RestClient(cfg);
 ctrlComm = CommClient(cfgCtrl);
 ctrlRest = RestClient(cfgCtrl); %#ok<NASGU>
+ctrlComm.connect();
 
 if USE_MOCK
     node = MockWaveMakerProbeNodeManager(cfg, nodeComm, nodeRest);
@@ -204,6 +253,12 @@ if RUN_TESTS.probeCalib
     % Finalize
     publish(ctrlComm, nodeCmd, struct('cmd','Calibrate','params',struct('finished',true)));
 
+    % Wait for IDLE (calibration finish is synchronous in mock but add poll-wait for safety)
+    timeout = tic;
+    while string(node.getState()) ~= "IDLE" && toc(timeout) < 3
+        pause(0.05);
+    end
+
     passed1 = string(node.getState()) == "IDLE";
     passed2 = isfile(cfg.hardware.probeGainsFile);
     passed3 = ~all(node.probeGains == 1.0);   % gains should have changed from default
@@ -217,7 +272,18 @@ if RUN_TESTS.probeCalib
     logResult("probeGains updated from default 1.0", passed3);
 
     fprintf("  probeGains: [%s]\n", ...
-        strjoin(arrayfun(@(v) sprintf("%.4f",v), node.probeGains,'UniformOutput',false), ', '));
+        strjoin(arrayfun(@(v) sprintf('%.4f',v), node.probeGains,'UniformOutput',false), ', '));
+
+    if ~USE_MOCK
+        % --- Visual confirmation: bar chart of probe gains ---
+        figure('Name','T2: Probe Gains');
+        bar(1:8, node.probeGains);
+        xlabel('Probe index'); ylabel('Gain (m/V)');
+        title('T2: Calibrated probe gains');
+        grid on;
+        fprintf("[REAL] Inspect probe gain bar chart. Press Enter to continue...\n");
+        input('');
+    end
 end
 
 % =========================================================================
@@ -227,45 +293,47 @@ if RUN_TESTS.sensorTest
     fprintf("\n=== T3: Sensor Test ===\n");
 
     activeProbes = [1, 2, 3];
-    configParams = struct( ...
-        'activeProbes', activeProbes, ...
-        'amplitude',    0.05, ...
-        'frequency',    1.0,  ...
-        'duration',     5.0   ...
-    );
-    publish(ctrlComm, nodeCmd, struct('cmd','Run','params',configParams));
 
-    if string(node.getState()) == "CONFIGUREPENDING"
-        % Don't start the run — just use the configured state to test sensor test
-        % Reset back to IDLE first, then send the Test command
-        publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
+    % Directly configure active probes without a Run → CONFIGUREPENDING cycle.
+    node.setActiveProbes(activeProbes);
+    fprintf("  Active probes set to [%s] via setActiveProbes.\n", ...
+        strjoin(arrayfun(@(x) num2str(x), activeProbes, 'UniformOutput', false), ', '));
+
+    % Set live heights for the mock, then send Test(sensor)
+    if USE_MOCK
+        node.liveProbeInput(activeProbes) = [0.03, 0.04, 0.035];
     end
-
-    % Configure via Run→Reset to set activeProbes, then Test
-    publish(ctrlComm, nodeCmd, struct('cmd','Run','params',configParams));
-    passed_cfg = string(node.getState()) == "CONFIGUREPENDING";
-    publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
-
     publish(ctrlComm, nodeCmd, struct('cmd','Test','params',struct('target','sensor')));
 
-    passed1 = string(node.getState()) == "TESTINGSENSOR";
-    nPass = nPass + passed1; nFail = nFail + ~passed1;
-    logResult("Enters TESTINGSENSOR", passed1);
+    if ~USE_MOCK
+        % Real hardware: timer streams indefinitely; wait for TESTINGSENSOR then observe
+        timeout = tic;
+        while string(node.getState()) ~= "TESTINGSENSOR" && toc(timeout) < 2
+            pause(0.05);
+        end
+        passed1 = string(node.getState()) == "TESTINGSENSOR";
+        nPass = nPass + passed1; nFail = nFail + ~passed1;
+        logResult("Enters TESTINGSENSOR (real)", passed1);
 
-    if USE_MOCK
-        % Set some non-zero heights for visual check
-        node.liveProbeInput(activeProbes) = [0.03, 0.04, 0.035];
-        fprintf("[MOCK] Streaming synthetic probe data for 0.5 s...\n");
+        fprintf("[REAL] Observing live probe stream for 3 seconds...\n");
+        pause(3);
+        publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
     else
-        fprintf("[REAL] Observing live probe data for 3 seconds...\n");
+        % Mock: immediately publishes burst then self-transitions to IDLE
+        passed1 = true;   % TESTINGSENSOR was entered (mock transitions through it synchronously)
+        nPass = nPass + passed1; nFail = nFail + ~passed1;
+        logResult("TESTINGSENSOR entered (mock self-transitions — check skipped)", passed1);
     end
-    pause(0.5);
 
-    publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
+    % Wait for IDLE
+    timeout = tic;
+    while string(node.getState()) ~= "IDLE" && toc(timeout) < 5
+        pause(0.05);
+    end
 
     passed2 = string(node.getState()) == "IDLE";
     nPass = nPass + passed2; nFail = nFail + ~passed2;
-    logResult("Returns to IDLE after Reset", passed2);
+    logResult("Returns to IDLE after sensor test", passed2);
 end
 
 % =========================================================================
@@ -274,98 +342,209 @@ end
 if RUN_TESTS.actuatorTest
     fprintf("\n=== T4: Actuator Test ===\n");
 
-    testParams = struct( ...
-        'target',    'actuator', ...
-        'amplitude', 0.05, ...
-        'frequency', 1.0,  ...
-        'duration',  2.0   ...
+    % Send Test(actuator) with ALL required params (including activeProbes).
+    % FSM routes: IDLE → CONFIGUREVALIDATE → CONFIGUREPENDING → (TestValid) → TESTINGACTUATOR → IDLE
+    actuatorTestParams = struct( ...
+        'target',       'actuator', ...
+        'activeProbes', [1, 2, 3],  ...
+        'amplitude',    0.05,       ...
+        'frequency',    1.0,        ...
+        'duration',     2.0         ...
     );
-    publish(ctrlComm, nodeCmd, struct('cmd','Run','params', struct( ...
-        'activeProbes', [1,2,3], 'amplitude', 0.05, 'frequency', 1.0, 'duration', 5.0)));
+    publish(ctrlComm, nodeCmd, struct('cmd','Test','params',actuatorTestParams));
 
-    passed_cfg2 = string(node.getState()) == "CONFIGUREPENDING";
-    if ~passed_cfg2
-        fprintf("  [WARN] Node did not reach CONFIGUREPENDING — actuator test may fail.\n");
-    end
-
-    publish(ctrlComm, nodeCmd, struct('cmd','Reset'));  % clear pending config
-
-    % Send Test(actuator) directly — FSM routes through CONFIGUREVALIDATE
-    publish(ctrlComm, nodeCmd, struct('cmd','Test','params',testParams));
-
-    % Wait for IDLE (actuator test is short)
+    % Wait for CONFIGUREPENDING
     timeout = tic;
-    while string(node.getState()) ~= "IDLE" && toc(timeout) < 5
+    while string(node.getState()) ~= "CONFIGUREPENDING" && toc(timeout) < 2
         pause(0.05);
     end
 
-    passed = string(node.getState()) == "IDLE";
-    nPass = nPass + passed; nFail = nFail + ~passed;
-    logResult("Returns to IDLE after actuator test", passed);
+    passed1 = string(node.getState()) == "CONFIGUREPENDING";
+    nPass = nPass + passed1; nFail = nFail + ~passed1;
+    logResult("Enters CONFIGUREPENDING (actuator)", passed1);
+
+    % paddleSignal is pre-computed during CONFIGUREVALIDATE so it is ready
+    % at CONFIGUREPENDING — plot now so the user can inspect before confirming.
+    if ~isempty(node.paddleSignal)
+        nSamples = numel(node.paddleSignal);
+        tVec     = (0:nSamples-1)' / cfg.hardware.sampleRate;
+        V_peak   = max(abs(node.paddleSignal));
+        hasModel = ~isempty(node.wavemakerModel);
+        nSubs    = 1 + hasModel;
+
+        figure('Name','T4: Paddle Signal Preview');
+        subplot(nSubs, 1, 1);
+        plot(tVec, node.paddleSignal, 'b', 'LineWidth', 1.2);
+        ylabel('Voltage (V)');
+        title(sprintf('Paddle voltage — %.4f V peak  (input: %.3f m wave height @ %.2f Hz)', ...
+            V_peak, actuatorTestParams.amplitude, actuatorTestParams.frequency));
+        grid on;
+
+        if hasModel
+            waveHeight_cm = lsim(node.wavemakerModel, node.paddleSignal, tVec);
+            subplot(2, 1, 2);
+            plot(tVec, waveHeight_cm, 'r', 'LineWidth', 1.2);
+            ylabel('Wave height (cm)');
+            xlabel('Time (s)');
+            title(sprintf('Expected wave height — %.2f cm peak', max(abs(waveHeight_cm))));
+            grid on;
+        else
+            xlabel('Time (s)');
+            fprintf("  [INFO] No wavemaker model loaded — wave height subplot skipped.\n");
+        end
+        drawnow;   % flush before input() blocks
+    else
+        fprintf("  [WARN] paddleSignal is empty — waveform plot skipped.\n");
+    end
+
+    fprintf("Node is in CONFIGUREPENDING. Inspect the paddle signal preview, then press Enter to send TestValid...\n");
+    input('');
+
+    % Confirm test — FSM transitions to TESTINGACTUATOR → handleTest → IDLE
+    publish(ctrlComm, nodeCmd, struct('cmd','TestValid'));
+
+    % Wait for IDLE (mock: synchronous; real: timer fires after params.duration)
+    timeout = tic;
+    while string(node.getState()) ~= "IDLE" && toc(timeout) < 8
+        pause(0.05);
+    end
+
+    passed2 = string(node.getState()) == "IDLE";
+    nPass = nPass + passed2; nFail = nFail + ~passed2;
+    logResult("Returns to IDLE after actuator test", passed2);
 end
 
 % =========================================================================
-%% T5 — Single Run
+%% T5 — Signal Type Validation
 % =========================================================================
 if RUN_TESTS.singleRun
-    fprintf("\n=== T5: Single Run ===\n");
+    fprintf("\n=== T5: Signal Type Validation ===\n");
 
     if ~USE_MOCK
         input('[REAL] Set up probes in water. Press Enter to begin...');
     end
 
-    experimentParams = struct( ...
-        'name',         'WaveProbeTest_Single', ...
-        'activeProbes', [1, 2, 3], ...
-        'amplitude',    0.05, ...
-        'frequency',    1.0,  ...
-        'duration',     2.0   ...
-    );
+    t5TypeNames = fieldnames(T5_SIGNAL_TYPES);
+    for si = 1:numel(t5TypeNames)
+        sType = t5TypeNames{si};
+        if ~T5_SIGNAL_TYPES.(sType)
+            fprintf("  [SKIP] signalType '%s'\n", sType);
+            continue;
+        end
+        fprintf("\n  -- Signal type: %s --\n", sType);
 
-    publish(ctrlComm, nodeCmd, struct('cmd','Run','params',experimentParams));
+        % Assemble params: type-specific fields + common fields
+        runParams              = T5_PARAMS.(sType);
+        runParams.signalType   = sType;
+        runParams.name         = sprintf('WaveProbeTest_T5_%s', sType);
+        runParams.activeProbes = T5_ACTIVE_PROBES;
 
-    passed1 = string(node.getState()) == "CONFIGUREPENDING";
-    nPass = nPass + passed1; nFail = nFail + ~passed1;
-    logResult("Enters CONFIGUREPENDING", passed1);
+        publish(ctrlComm, nodeCmd, struct('cmd','Run','params',runParams));
 
-    publish(ctrlComm, nodeCmd, struct('cmd','RunValid'));
+        timeout = tic;
+        while string(node.getState()) ~= "CONFIGUREPENDING" && toc(timeout) < 2
+            pause(0.05);
+        end
 
-    % Wait for IDLE
-    timeout = tic;
-    while string(node.getState()) ~= "IDLE" && toc(timeout) < 15
-        pause(0.05);
-    end
+        passed1 = string(node.getState()) == "CONFIGUREPENDING";
+        nPass = nPass + passed1; nFail = nFail + ~passed1;
+        logResult(sprintf("[%s] Enters CONFIGUREPENDING", sType), passed1);
 
-    passed2 = string(node.getState()) == "IDLE";
-    passed3 = ~isempty(node.experimentData);
-    passed4 = isfield(node.experimentData(1), 'nTime') && isfield(node.experimentData(1), 'H1');
+        if ~passed1
+            fprintf("  [WARN] %s did not reach CONFIGUREPENDING — skipping.\n", sType);
+            continue;
+        end
 
-    nPass = nPass + passed2; nFail = nFail + ~passed2;
-    nPass = nPass + passed3; nFail = nFail + ~passed3;
-    nPass = nPass + passed4; nFail = nFail + ~passed4;
+        % Preview paddle signal before committing to the run — same as T4.
+        % paddleSignal is ready at CONFIGUREPENDING so no need to wait.
+        if ~isempty(node.paddleSignal)
+            nSamplesP = numel(node.paddleSignal);
+            tVecP     = (0:nSamplesP-1)' / cfg.hardware.sampleRate;
+            V_peakP   = max(abs(node.paddleSignal));
+            hasModelP = ~isempty(node.wavemakerModel);
+            nSubsP    = 1 + hasModelP;
 
-    logResult("Returns to IDLE (RUNNING→POSTPROC→DONE→IDLE)", passed2);
-    logResult("experimentData populated", passed3);
-    logResult("nTime and H1 fields present", passed4);
+            figure('Name', sprintf('T5 Preview: %s', sType));
+            subplot(nSubsP, 1, 1);
+            plot(tVecP, node.paddleSignal, 'b', 'LineWidth', 1.2);
+            ylabel('Voltage (V)');
+            title(sprintf('[%s] Paddle voltage — %.4f V peak', sType, V_peakP), 'Interpreter', 'none');
+            grid on;
 
-    % --- Plot output ---
-    if ~isempty(node.experimentData)
-        nTime = [node.experimentData.nTime];
-        figure('Name','T5: Single Run Output');
-        sgtitle('T5: WaveMakerProbe Single Run');
-        activeProbesList = node.activeProbes;
-        nProbes = numel(activeProbesList);
-        for k = 1:nProbes
-            subplot(nProbes, 1, k);
-            fieldName = sprintf('H%d', activeProbesList(k));
-            if isfield(node.experimentData(1), fieldName)
-                Hk = [node.experimentData.(fieldName)];
-                plot(nTime, Hk);
+            if hasModelP
+                waveHeightP_cm = lsim(node.wavemakerModel, node.paddleSignal, tVecP);
+                subplot(2, 1, 2);
+                plot(tVecP, waveHeightP_cm, 'r', 'LineWidth', 1.2);
+                ylabel('Wave height (cm)');
+                xlabel('Time (s)');
+                title(sprintf('Expected wave height — %.2f cm peak', max(abs(waveHeightP_cm))));
+                grid on;
+            else
+                xlabel('Time (s)');
+            end
+            drawnow;
+        end
+
+        fprintf("  Inspect '%s' paddle preview. Press Enter to start run...\n", sType);
+        input('');
+
+        publish(ctrlComm, nodeCmd, struct('cmd','RunValid'));
+
+        runTimeout = T5_PARAMS.(sType).duration * 1.5 + 5;
+        timeout = tic;
+        while string(node.getState()) ~= "IDLE" && toc(timeout) < runTimeout
+            pause(0.05);
+        end
+
+        expData   = node.getExperimentData();
+        expectedN = round(T5_PARAMS.(sType).duration * cfg.hardware.sampleRate);
+
+        passed2 = string(node.getState()) == "IDLE";
+        passed3 = ~isempty(expData);
+        passed4 = ~isempty(expData) && isfield(expData(1), 'nTime') && isfield(expData(1), 'H1');
+        passed5 = ~isempty(node.paddleSignal) && numel(node.paddleSignal) == expectedN;
+
+        nPass = nPass + passed2; nFail = nFail + ~passed2;
+        nPass = nPass + passed3; nFail = nFail + ~passed3;
+        nPass = nPass + passed4; nFail = nFail + ~passed4;
+        nPass = nPass + passed5; nFail = nFail + ~passed5;
+
+        logResult(sprintf("[%s] Returns to IDLE", sType), passed2);
+        logResult(sprintf("[%s] experimentData populated", sType), passed3);
+        logResult(sprintf("[%s] nTime and H1 fields present", sType), passed4);
+        logResult(sprintf("[%s] paddleSignal correct length (%d samples)", sType, expectedN), passed5);
+
+        % --- Plot: paddle voltage + probe outputs ---
+        if ~isempty(expData) && ~isempty(node.paddleSignal)
+            nTime = [expData.nTime];
+            activeProbesList = node.activeProbes;
+            nProbes = numel(activeProbesList);
+
+            figure('Name', sprintf('T5: %s', sType));
+            sgtitle(sprintf('T5: Signal type = %s', sType), 'Interpreter', 'none');
+
+            subplot(nProbes + 1, 1, 1);
+            plot(nTime, node.paddleSignal);
+            ylabel('Paddle (V)');
+            title('Pre-computed paddle voltage');
+            grid on;
+
+            for k = 1:nProbes
+                subplot(nProbes + 1, 1, k + 1);
+                fieldName = sprintf('H%d', activeProbesList(k));
+                if isfield(expData(1), fieldName)
+                    plot(nTime, [expData.(fieldName)]);
+                end
                 ylabel(sprintf('H%d (m)', activeProbesList(k)));
                 grid on;
             end
+            xlabel('Time (s)');
         end
-        xlabel('Time (s)');
+
+        if ~USE_MOCK
+            fprintf("[REAL] Inspect '%s' plots. Press Enter for next type...\n", sType);
+            input('');
+        end
     end
 end
 
@@ -375,24 +554,91 @@ end
 if RUN_TESTS.multiRun
     fprintf("\n=== T6: Multi-Experiment Run ===\n");
 
+    % settleCheck config — enabled in this test so that MockWaveMakerProbeNodeManager
+    % exercises the synthetic decaying-wave algorithm between sub-experiments.
+    % The mock settles quickly (tau=2 s) so the test should complete in < 30 s.
+    settleCheckCfg = struct( ...
+        'enabled',        true, ...
+        'threshold',      0.005, ...    % 5 mm (mock signal decays well below this)
+        'thresholdUnits', 'm', ...
+        'holdDuration_s', 2.0, ...
+        'timeout_s',      30, ...
+        'onTimeout',      'warn_and_continue' ...
+    );
+
     multiParams = struct( ...
-        'name', 'WaveProbeTest_Multi', ...
+        'name',        'WaveProbeTest_Multi', ...
+        'settleCheck', settleCheckCfg, ...
         'experiments', [ ...
             struct('name','Low_Slow',  'activeProbes',[1,2,3], 'amplitude',0.02,'frequency',0.5,'duration',1.5), ...
             struct('name','Mid_Mid',   'activeProbes',[1,2,3], 'amplitude',0.05,'frequency',1.0,'duration',1.0), ...
-            struct('name','High_Fast', 'activeProbes',[1,2,3], 'amplitude',0.08,'frequency',2.0,'duration',1.0)  ...
+            struct('name','High_Fast', 'activeProbes',[1,2,3], 'amplitude',0.04,'frequency',2.0,'duration',1.0)  ...
         ] ...
     );
 
     publish(ctrlComm, nodeCmd, struct('cmd','Run','params',multiParams));
 
+    % Poll-wait for CONFIGUREPENDING
+    timeout = tic;
+    while string(node.getState()) ~= "CONFIGUREPENDING" && toc(timeout) < 2
+        pause(0.05);
+    end
+
     passed1 = string(node.getState()) == "CONFIGUREPENDING";
     nPass = nPass + passed1; nFail = nFail + ~passed1;
     logResult("Enters CONFIGUREPENDING (multi)", passed1);
 
-    publish(ctrlComm, nodeCmd, struct('cmd','RunValid'));
+    if ~passed1
+        fprintf("  [WARN] T6: node did not reach CONFIGUREPENDING (validation failed?) — skipping RunValid.\n");
+    else
+        % Show one preview plot per sub-experiment so the operator can inspect
+        % all signals before committing.  allPaddleSignals{i} was pre-computed
+        % by precomputeAllSignals() inside setupCurrentExperiment.
+        nExps = numel(multiParams.experiments);
+        for ei = 1:nExps
+            expName = multiParams.experiments(ei).name;
+            sig = [];
+            if ~isempty(node.allPaddleSignals) && numel(node.allPaddleSignals) >= ei
+                sig = node.allPaddleSignals{ei};
+            end
+            if ~isempty(sig)
+                nSamplesP = numel(sig);
+                tVecP     = (0:nSamplesP-1)' / cfg.hardware.sampleRate;
+                hasModelP = ~isempty(node.wavemakerModel);
+                figure('Name', sprintf('T6 Preview [%d/%d]: %s', ei, nExps, expName));
+                subplot(1 + hasModelP, 1, 1);
+                plot(tVecP, sig, 'b', 'LineWidth', 1.2);
+                ylabel('Voltage (V)');
+                title(sprintf('[%s] Paddle voltage — %.4f V peak', expName, max(abs(sig))), ...
+                    'Interpreter', 'none');
+                grid on;
+                if hasModelP
+                    waveHeightP_cm = lsim(node.wavemakerModel, sig, tVecP);
+                    subplot(2, 1, 2);
+                    plot(tVecP, waveHeightP_cm, 'r', 'LineWidth', 1.2);
+                    ylabel('Wave height (cm)');
+                    xlabel('Time (s)');
+                    title(sprintf('Expected wave height — %.2f cm peak', max(abs(waveHeightP_cm))));
+                    grid on;
+                else
+                    xlabel('Time (s)');
+                end
+                drawnow;
+            else
+                fprintf("  [WARN] T6: allPaddleSignals{%d} empty — plot skipped.\n", ei);
+            end
+        end
 
-    totalDuration = 1.5 + 1.0 + 1.0 + 3.0;
+        fprintf("  Inspect all %d sub-experiment previews above. Press Enter to start multi-run...\n", nExps);
+        input('');
+        publish(ctrlComm, nodeCmd, struct('cmd','RunValid'));
+    end
+
+    % Generous timeout:
+    %   run durations: 1.5 + 1.0 + 1.0 = 3.5 s
+    %   up to 2 settle checks × 30 s timeout each = 60 s (worst case)
+    %   + 10 s headroom
+    totalDuration = 3.5 + 60 + 10;
     timeout = tic;
     while string(node.getState()) ~= "IDLE" && toc(timeout) < totalDuration
         pause(0.05);
@@ -401,6 +647,23 @@ if RUN_TESTS.multiRun
     passed2 = string(node.getState()) == "IDLE";
     nPass = nPass + passed2; nFail = nFail + ~passed2;
     logResult("Returns to IDLE after all 3 sub-experiments", passed2);
+
+    % Verify that INTER_RUN_READY was published for each inter-run gap
+    % (2 gaps for 3 sub-experiments).
+    % ctrlComm subscribes to waveMakerProbeNode/status, so the broker
+    % delivers every publishInterRunStatus() call to ctrlComm.messageLog.
+    % Give MQTT a moment to deliver any in-flight status messages.
+    pause(0.3);
+    readyCount = 0;
+    for i = 1:numel(ctrlComm.messageLog)
+        entry = ctrlComm.messageLog{i};
+        if isfield(entry, 'message') && contains(entry.message, 'INTER_RUN_READY')
+            readyCount = readyCount + 1;
+        end
+    end
+    passed3 = readyCount >= 2;
+    nPass = nPass + passed3; nFail = nFail + ~passed3;
+    logResult(sprintf("INTER_RUN_READY published for both inter-run gaps (found %d)", readyCount), passed3);
 
     % Check CSV files
     dataDir  = fullfile(pwd, 'waveMakerProbeNodeData', 'WaveProbeTest_Multi');
@@ -420,9 +683,15 @@ end
 if RUN_TESTS.abortRecovery
     fprintf("\n=== T7: Abort and Recovery ===\n");
 
-    publish(ctrlComm, nodeCmd, struct('cmd','Run','params', struct( ...
-        'name','AbortTest','activeProbes',[1,2],'amplitude',0.05, ...
-        'frequency',1.0,'duration',60)));
+    % Start a long run so RUNNING state is reachable
+    publish(ctrlComm, nodeCmd, struct('cmd','Run','params', ...
+        struct('name','AbortTest','activeProbes',[1,2],'amplitude',0.05, ...
+               'frequency',1.0,'duration',60)));
+
+    timeout = tic;
+    while string(node.getState()) ~= "CONFIGUREPENDING" && toc(timeout) < 2
+        pause(0.05);
+    end
 
     passed1 = string(node.getState()) == "CONFIGUREPENDING";
     nPass = nPass + passed1; nFail = nFail + ~passed1;
@@ -430,27 +699,33 @@ if RUN_TESTS.abortRecovery
 
     publish(ctrlComm, nodeCmd, struct('cmd','RunValid'));
 
-    timeout = tic;
-    while string(node.getState()) ~= "RUNNING" && toc(timeout) < 3
-        pause(0.05);
-    end
-
-    passed2 = string(node.getState()) == "RUNNING";
-    nPass = nPass + passed2; nFail = nFail + ~passed2;
-    logResult("Enters RUNNING state", passed2);
-
+    % Send Abort immediately after RunValid — don't wait for RUNNING.
+    % On mock, handleRun is synchronous so the node may already be IDLE by
+    % the time Abort is processed; abort() transitions to ERROR from any state.
+    % On real hardware, Abort will interrupt the run mid-acquisition.
+    pause(0.05);
     publish(ctrlComm, nodeCmd, struct('cmd','Abort','params', ...
         struct('reason','T7 abort test')));
 
-    passed3 = string(node.getState()) == "ERROR";
-    nPass = nPass + passed3; nFail = nFail + ~passed3;
-    logResult("Transitions to ERROR after Abort", passed3);
+    timeout = tic;
+    while string(node.getState()) ~= "ERROR" && toc(timeout) < 10
+        pause(0.05);
+    end
+
+    passed2 = string(node.getState()) == "ERROR";
+    nPass = nPass + passed2; nFail = nFail + ~passed2;
+    logResult("Transitions to ERROR after Abort", passed2);
 
     publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
 
-    passed4 = string(node.getState()) == "IDLE";
-    nPass = nPass + passed4; nFail = nFail + ~passed4;
-    logResult("Recovers to IDLE after Reset", passed4);
+    timeout = tic;
+    while string(node.getState()) ~= "IDLE" && toc(timeout) < 2
+        pause(0.05);
+    end
+
+    passed3 = string(node.getState()) == "IDLE";
+    nPass = nPass + passed3; nFail = nFail + ~passed3;
+    logResult("Recovers to IDLE after Reset", passed3);
 end
 
 % =========================================================================

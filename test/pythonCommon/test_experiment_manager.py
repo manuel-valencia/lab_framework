@@ -435,6 +435,177 @@ class TestExperimentManager:
         # Should not crash, just ignore
 
 
+class TestSettleCheck:
+    """
+    Tests for the inter-run settleCheck / awaitReady system.
+    Mirrors the T6 logic validated in WaveMakerProbeNodeTest.m.
+    """
+
+    @pytest.fixture
+    def setup_multi_manager(self):
+        """Manager fixture wired for a 2-experiment run with settleCheck."""
+        cfg = {
+            'clientID': 'TestNode',
+            'hardware': {
+                'hasSensor':  True,
+                'hasActuator': True,
+            }
+        }
+        mock_comm = Mock()
+        mock_comm.client_id = cfg['clientID']
+        mock_comm.connect    = Mock()
+        mock_comm.disconnect = Mock()
+        mock_comm.comm_publish = Mock()
+        mock_comm.get_full_topic = Mock(side_effect=lambda s: f"TestNode/{s}")
+        mock_comm.message_log = []
+
+        mock_rest = Mock()
+        mock_rest.check_health = Mock(return_value=True)
+        mock_rest.send_data    = Mock(return_value={"status": "success"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            mgr = MockNodeManager(cfg, mock_comm, mock_rest)
+            yield mgr, mock_comm, mock_rest
+            os.chdir(os.path.dirname(__file__))
+
+    def _run_multi(self, mgr, settle_cfg):
+        """Helper: configure, RunValid, wait for IDLE on a 2-sub-experiment run."""
+        params = {
+            "name": "MultiTest",
+            "settleCheck": settle_cfg,
+            "experiments": [
+                {"name": "Exp1", "waveType": "sin", "amplitude": 0.05},
+                {"name": "Exp2", "waveType": "sin", "amplitude": 0.03},
+            ]
+        }
+        mgr.handle_command({"cmd": "Run", "params": params})
+        assert mgr.get_state() == "CONFIGUREPENDING"
+        mgr.handle_command({"cmd": "RunValid"})
+        return mgr.get_state()
+
+    # ------------------------------------------------------------------
+    def test_settle_check_disabled_by_default(self, setup_multi_manager):
+        """Base awaitReady returns True immediately — no settleCheck in cfg."""
+        mgr, mock_comm, _ = setup_multi_manager
+
+        final = self._run_multi(mgr, {"enabled": False})
+        assert final == "IDLE", f"Expected IDLE, got {final}"
+
+        # INTER_RUN_READY must NOT have been published (disabled)
+        published = [str(c) for c in mock_comm.comm_publish.call_args_list]
+        assert not any("INTER_RUN_READY" in p for p in published), \
+            "INTER_RUN_READY should not be published when settle check is disabled"
+
+    def test_settle_check_enabled_base_noop(self, setup_multi_manager):
+        """When enabled, base await_ready() still returns True (no-op)."""
+        mgr, mock_comm, _ = setup_multi_manager
+
+        sc = {"enabled": True, "threshold": 0.005, "thresholdUnits": "m",
+              "holdDuration_s": 1.0, "timeout_s": 10}
+        final = self._run_multi(mgr, sc)
+        assert final == "IDLE", f"Expected IDLE, got {final}"
+
+        # INTER_RUN_READY MUST have been published (1 gap for 2 sub-experiments)
+        published_calls = [str(c) for c in mock_comm.comm_publish.call_args_list]
+        ready_count = sum(1 for p in published_calls if "INTER_RUN_READY" in p)
+        assert ready_count >= 1, \
+            f"Expected at least 1 INTER_RUN_READY publish, found {ready_count}"
+
+    def test_resolve_settle_check_defaults(self, setup_multi_manager):
+        """_resolve_settle_check returns sensible defaults when nothing configured."""
+        mgr, _, _ = setup_multi_manager
+        # Set a minimal experiment_spec so resolve doesn't crash
+        mgr.experiment_spec = {"params": {}}
+        sc = mgr._resolve_settle_check()
+        assert sc["enabled"] is False
+        assert sc["timeout_s"] == 120.0
+        assert sc["onTimeout"] == "warn_and_continue"
+
+    def test_resolve_settle_check_merges_node_level(self, setup_multi_manager):
+        """Node-level settle_check overrides defaults."""
+        mgr, _, _ = setup_multi_manager
+        mgr.settle_check = {"enabled": True, "threshold": 0.01, "timeout_s": 30}
+        mgr.experiment_spec = {"params": {}}
+        sc = mgr._resolve_settle_check()
+        assert sc["enabled"] is True
+        assert sc["threshold"] == 0.01
+        assert sc["timeout_s"] == 30
+        assert sc["thresholdUnits"] == "m"   # default preserved
+
+    def test_resolve_settle_check_per_run_overrides_node_level(self, setup_multi_manager):
+        """Per-run settleCheck overrides node-level settle_check."""
+        mgr, _, _ = setup_multi_manager
+        mgr.settle_check = {"enabled": True, "timeout_s": 60}
+        mgr.experiment_spec = {
+            "params": {"settleCheck": {"enabled": False, "timeout_s": 5}}
+        }
+        sc = mgr._resolve_settle_check()
+        assert sc["enabled"] is False   # per-run wins
+        assert sc["timeout_s"] == 5
+
+    def test_await_ready_base_returns_true(self, setup_multi_manager):
+        """Base await_ready hook always returns True."""
+        mgr, _, _ = setup_multi_manager
+        sc = {"enabled": True, "threshold": 0.005, "holdDuration_s": 1.0, "timeout_s": 5}
+        assert mgr.await_ready(sc) is True
+
+    def test_settle_check_timeout_warn_and_continue(self, setup_multi_manager):
+        """onTimeout=warn_and_continue: experiment continues even when await_ready returns False."""
+        mgr, mock_comm, _ = setup_multi_manager
+
+        # Override await_ready to simulate a timeout
+        mgr.await_ready = lambda sc: False
+
+        sc = {"enabled": True, "threshold": 0.005, "thresholdUnits": "m",
+              "holdDuration_s": 1.0, "timeout_s": 1, "onTimeout": "warn_and_continue"}
+        final = self._run_multi(mgr, sc)
+        assert final == "IDLE", f"Expected IDLE (warn_and_continue), got {final}"
+
+        # INTER_RUN_TIMEOUT must have been published
+        published_calls = [str(c) for c in mock_comm.comm_publish.call_args_list]
+        timeout_count = sum(1 for p in published_calls if "INTER_RUN_TIMEOUT" in p)
+        assert timeout_count >= 1, \
+            f"Expected at least 1 INTER_RUN_TIMEOUT publish, found {timeout_count}"
+
+    def test_settle_check_timeout_error(self, setup_multi_manager):
+        """onTimeout=error: FSM transitions to ERROR when await_ready returns False."""
+        mgr, mock_comm, _ = setup_multi_manager
+
+        # Override await_ready to simulate a timeout
+        mgr.await_ready = lambda sc: False
+
+        sc = {"enabled": True, "threshold": 0.005, "thresholdUnits": "m",
+              "holdDuration_s": 1.0, "timeout_s": 1, "onTimeout": "error"}
+        final = self._run_multi(mgr, sc)
+        assert final == "ERROR", f"Expected ERROR (onTimeout=error), got {final}"
+
+    def test_publish_inter_run_status_ready(self, setup_multi_manager):
+        """_publish_inter_run_status publishes correct INTER_RUN_READY payload."""
+        mgr, mock_comm, _ = setup_multi_manager
+        mgr.experiment_spec = {
+            "params": {
+                "experiments": [
+                    {"name": "Exp1", "amplitude": 0.05},
+                    {"name": "Exp2", "amplitude": 0.03},
+                ]
+            }
+        }
+        mgr._publish_inter_run_status("INTER_RUN_READY", 2)
+
+        mock_comm.comm_publish.assert_called()
+        # Find the call that published to status topic
+        calls = mock_comm.comm_publish.call_args_list
+        status_calls = [c for c in calls if "status" in str(c.args[0])]
+        assert status_calls, "No publish to status topic found"
+        payload = json.loads(status_calls[-1].args[1])
+        assert payload["state"] == "INTER_RUN_READY"
+        assert payload["nextExpIndex"] == 2
+        assert payload["nextExpName"] == "Exp2"
+        assert "timestamp" in payload
+
+
 if __name__ == "__main__":
     # Run tests directly if script is executed
     pytest.main([__file__, "-v"])
+

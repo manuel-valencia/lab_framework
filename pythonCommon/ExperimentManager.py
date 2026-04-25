@@ -119,6 +119,12 @@ class ExperimentManager(ABC):
             hw = cfg["hardware"]
             self.has_sensor = hw.get("hasSensor", False)
             self.has_actuator = hw.get("hasActuator", False)
+            # Load node-level settleCheck defaults from hardware config.
+            # Subclasses may further override self.settle_check after super().__init__.
+            sc = hw.get("settleCheck", {})
+            self.settle_check = sc if isinstance(sc, dict) else {}
+        else:
+            self.settle_check = {}
         
         # Load calibration gains if available
         try:
@@ -641,10 +647,29 @@ class ExperimentManager(ABC):
         # Check if more experiments remain
         if ("experiments" in self.experiment_spec.get("params", {}) and 
             self.current_experiment_index < len(self.experiment_spec["params"]["experiments"]) - 1):
-            # Multi-experiment mode: setup next experiment
+            # Multi-experiment mode: gate on inter-run readiness before next run.
             try:
                 tag = self._get_experiment_tag()
                 self._send_exp_data(self.experiment_data, tag)  # Send data to REST server
+
+                # --- Inter-run readiness gate ---
+                sc = self._resolve_settle_check()
+                if sc.get("enabled", False):
+                    self.log("INFO", f"[POSTPROC] settleCheck enabled — awaiting ready signal before "
+                                     f"sub-experiment {self.current_experiment_index + 2}.")
+                    ready = self.await_ready(sc)
+                    if ready:
+                        self._publish_inter_run_status("INTER_RUN_READY", self.current_experiment_index + 2)
+                    else:
+                        self._publish_inter_run_status("INTER_RUN_TIMEOUT", self.current_experiment_index + 2)
+                        on_timeout = sc.get("onTimeout", "warn_and_continue")
+                        if on_timeout == "error":
+                            self.log("ERROR", "settleCheck timed out and onTimeout=error — aborting.")
+                            self.transition(State.ERROR)
+                            return
+                        else:
+                            self.log("WARN", "settleCheck timed out — continuing (onTimeout=warn_and_continue).")
+
                 self.current_experiment_index += 1
                 self.setup_current_experiment()
                 self.transition(State.RUNNING)
@@ -736,7 +761,96 @@ class ExperimentManager(ABC):
     def _enter_error(self) -> None:
         """Failsafe entry into ERROR state"""
         print(f"{self.fsm_tag} [ERROR] System faulted.")
-    
+
+    # ------------------------------------------------------------------
+    # Inter-run readiness (settleCheck) helpers
+    # ------------------------------------------------------------------
+
+    def await_ready(self, sc: Dict[str, Any]) -> bool:
+        """
+        Inter-run readiness hook.
+
+        Called by _enter_post_proc between sub-experiments when settleCheck
+        is enabled.  The base implementation always returns True immediately
+        (no wait), which is correct for nodes with no physical settling
+        behaviour.
+
+        Override in subclasses to implement domain-specific readiness sensing,
+        e.g. a half-amplitude threshold check on sensor channels.
+
+        Args:
+            sc: Resolved settleCheck dict (see _resolve_settle_check).
+
+        Returns:
+            True if node became ready, False if timed out.
+        """
+        return True   # base: no-op, always ready
+
+    def _resolve_settle_check(self) -> Dict[str, Any]:
+        """
+        Merge node-level and run-level settleCheck config into one dict.
+
+        Priority (highest → lowest):
+          1. experimentSpec['params']['settleCheck']   (per-run override)
+          2. self.settle_check                         (set from cfg in __init__)
+          3. built-in defaults
+
+        Returns:
+            Fully populated settleCheck dict.
+        """
+        defaults = {
+            "enabled":        False,
+            "threshold":      0.0,
+            "thresholdUnits": "m",
+            "holdDuration_s": 5.0,
+            "timeout_s":      120.0,
+            "onTimeout":      "warn_and_continue",
+        }
+        sc = {**defaults}
+
+        # Merge node-level config
+        if self.settle_check and isinstance(self.settle_check, dict):
+            sc = self._merge_dicts(sc, self.settle_check)
+
+        # Merge per-run override
+        if (self.experiment_spec and
+                "settleCheck" in self.experiment_spec.get("params", {}) and
+                isinstance(self.experiment_spec["params"]["settleCheck"], dict)):
+            sc = self._merge_dicts(sc, self.experiment_spec["params"]["settleCheck"])
+
+        return sc
+
+    def _publish_inter_run_status(self, event_name: str, next_exp_index: int) -> None:
+        """
+        Broadcast an inter-run marker on the node's /status topic.
+
+        Other nodes (e.g. a control node) subscribe to /status and can
+        react to INTER_RUN_READY by forwarding RunValid to other nodes
+        that need to stay in lock-step.
+
+        Args:
+            event_name:     'INTER_RUN_READY' or 'INTER_RUN_TIMEOUT'
+            next_exp_index: 1-based index of the sub-experiment about to run
+        """
+        msg: Dict[str, Any] = {
+            "state":        event_name,
+            "nextExpIndex": next_exp_index,
+            "timestamp":    datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+        }
+        experiments = (self.experiment_spec or {}).get("params", {}).get("experiments", [])
+        if next_exp_index <= len(experiments):
+            exp = experiments[next_exp_index - 1]
+            if isinstance(exp, dict) and "name" in exp:
+                msg["nextExpName"] = exp["name"]
+
+        self.comm.comm_publish(self.comm.get_full_topic("status"), json.dumps(msg))
+        self.log("INFO", f"[POSTPROC] Published {event_name} for sub-experiment {next_exp_index}.")
+
+    @staticmethod
+    def _merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """Shallow merge: override fields overwrite matching base fields."""
+        return {**base, **override}
+
     def _exit_calibrating(self) -> None:
         """Cleanup before leaving CALIBRATING"""
         print(f"{self.fsm_tag} [EXIT] Calibration complete.")

@@ -42,6 +42,22 @@ classdef (Abstract) ExperimentManager < handle
         FSMtag                      % Precomputed logging FSMtag, e.g., '[FSM:clientID]'
         cmd                         % Command string for current operation
         logDir                      % Folder path for commLog / fsmLog output
+
+        % settleCheck — inter-run readiness configuration.
+        % Controls whether awaitReady() runs between sub-experiments in
+        % multi-experiment mode.  Populated from:
+        %   (1) cfg.hardware.settleCheck  (node-level default)
+        %   (2) experimentSpec.params.settleCheck  (per-run override, highest priority)
+        %
+        % Fields (all optional — omit to use defaults):
+        %   enabled        logical   — master switch (default false)
+        %   threshold      double    — signal magnitude that counts as "settled"
+        %                             (units defined by the node, e.g. m, degC)
+        %   thresholdUnits string    — human-readable unit label for logs
+        %   holdDuration_s double    — seconds the signal must stay below threshold
+        %   timeout_s      double    — max wait before giving up (default 120 s)
+        %   onTimeout      string    — 'warn_and_continue' (default) | 'error'
+        settleCheck                 % struct, see above
     end
 
     %==================================================================
@@ -85,6 +101,16 @@ classdef (Abstract) ExperimentManager < handle
                 if isfield(hw, "hasActuator")
                     obj.hasActuator = hw.hasActuator;
                 end
+                % Load node-level settleCheck defaults from hardware config.
+                % Subclasses may further override obj.settleCheck in their
+                % own constructors after calling the base constructor.
+                if isfield(hw, 'settleCheck') && isstruct(hw.settleCheck)
+                    obj.settleCheck = hw.settleCheck;
+                else
+                    obj.settleCheck = struct();   % empty = all defaults used
+                end
+            else
+                obj.settleCheck = struct();
             end
 
             % Will load calibrationGains.mat table if available in same node folder
@@ -395,6 +421,101 @@ classdef (Abstract) ExperimentManager < handle
     %% Protected State Machine Core
     %==================================================================
     methods (Access = protected)
+
+        % ------------------------------------------------------------------
+        % awaitReady — inter-run readiness hook.
+        %
+        % Called by enterPostProc between sub-experiments when settleCheck
+        % is enabled.  The base implementation always returns true immediately
+        % (no wait needed), which is correct for nodes with no physical
+        % settling behaviour (e.g. a pure data logger).
+        %
+        % Override in subclasses to implement domain-specific sensing:
+        %   • WaveMakerProbeNodeManager  → half-amplitude < threshold for holdDuration_s
+        %   • ThermalChamberNodeManager  → temperature delta < threshold
+        %   • etc.
+        %
+        % Arguments:
+        %   sc  — resolved settleCheck struct (see resolveSettleCheck)
+        %
+        % Returns:
+        %   ready — true if node became ready, false if timed out
+        % ------------------------------------------------------------------
+        function ready = awaitReady(~, ~)
+            ready = true;   % base: no-op, always ready
+        end
+
+        % ------------------------------------------------------------------
+        % resolveSettleCheck — merges node-level and run-level settleCheck.
+        %
+        % Priority (highest → lowest):
+        %   1. experimentSpec.params.settleCheck   (per-run override)
+        %   2. obj.settleCheck                     (set from cfg in constructor / subclass)
+        %   3. built-in defaults
+        %
+        % Returns a fully populated struct with all required fields set.
+        % ------------------------------------------------------------------
+        function sc = resolveSettleCheck(obj)
+            % Built-in defaults
+            sc = struct( ...
+                'enabled',        false, ...
+                'threshold',      0, ...
+                'thresholdUnits', 'm', ...
+                'holdDuration_s', 5, ...
+                'timeout_s',      120, ...
+                'onTimeout',      'warn_and_continue' ...
+            );
+
+            % Merge node-level config (obj.settleCheck)
+            if ~isempty(obj.settleCheck) && isstruct(obj.settleCheck)
+                sc = obj.mergeStructFields(sc, obj.settleCheck);
+            end
+
+            % Merge per-run override (experimentSpec.params.settleCheck)
+            if ~isempty(obj.experimentSpec) && isfield(obj.experimentSpec, 'params') ...
+                    && isfield(obj.experimentSpec.params, 'settleCheck') ...
+                    && isstruct(obj.experimentSpec.params.settleCheck)
+                sc = obj.mergeStructFields(sc, obj.experimentSpec.params.settleCheck);
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % publishInterRunStatus — broadcasts an inter-run marker on the
+        % node's /status topic so other nodes (e.g. control node) can
+        % coordinate their own timing.
+        %
+        % Arguments:
+        %   eventName       — e.g. 'INTER_RUN_READY' or 'INTER_RUN_TIMEOUT'
+        %   nextExpIndex    — 1-based index of the sub-experiment about to run
+        % ------------------------------------------------------------------
+        function publishInterRunStatus(obj, eventName, nextExpIndex)
+            msg = struct( ...
+                'state',         eventName, ...
+                'nextExpIndex',  nextExpIndex, ...
+                'timestamp',     string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS')) ...
+            );
+            if ~isempty(obj.experimentSpec) && isfield(obj.experimentSpec.params, 'experiments')
+                if nextExpIndex <= numel(obj.experimentSpec.params.experiments)
+                    expName = obj.experimentSpec.params.experiments(nextExpIndex).name;
+                    msg.nextExpName = expName;
+                end
+            end
+            obj.comm.commPublish(obj.comm.getFullTopic('status'), jsonencode(msg));
+            obj.log('INFO', sprintf('[POSTPROC] Published %s for sub-experiment %d.', eventName, nextExpIndex));
+        end
+
+        % ------------------------------------------------------------------
+        % mergeStructFields — shallow merge: fields in 'override' overwrite
+        % matching fields in 'base'; non-matching fields in 'base' are kept.
+        % ------------------------------------------------------------------
+        function s = mergeStructFields(~, base, override)
+            s = base;
+            fields = fieldnames(override);
+            for i = 1:numel(fields)
+                s.(fields{i}) = override.(fields{i});
+            end
+        end
+
         function transition(obj, newState)
             % Handles state transitions, verifies legality before switching
             %   newState - Enum value of type State
@@ -622,9 +743,36 @@ classdef (Abstract) ExperimentManager < handle
             % Check if more experiments remain
             if isfield(obj.experimentSpec.params, 'experiments') && ...
                obj.currentExperimentIndex < length(obj.experimentSpec.params.experiments)
-                % Multi-experiment mode: setup next experiment
+                % Multi-experiment mode: block here until node signals ready,
+                % then set up and immediately run the next sub-experiment.
                 try
                     obj.sendExpData(obj.experimentData, tag);  % Send data to REST server
+
+                    % --- Inter-run readiness gate ---
+                    % Merge node-level and run-level settleCheck config, then
+                    % call awaitReady().  The base implementation returns
+                    % immediately (enabled=false); subclasses override to
+                    % implement domain-specific readiness sensing.
+                    sc = obj.resolveSettleCheck();
+                    if sc.enabled
+                        obj.log("INFO", sprintf( ...
+                            "[POSTPROC] settleCheck enabled — awaiting ready signal before sub-experiment %d.", ...
+                            obj.currentExperimentIndex + 1));
+                        ready = obj.awaitReady(sc);
+                        if ready
+                            obj.publishInterRunStatus("INTER_RUN_READY", obj.currentExperimentIndex + 1);
+                        else
+                            obj.publishInterRunStatus("INTER_RUN_TIMEOUT", obj.currentExperimentIndex + 1);
+                            if strcmpi(sc.onTimeout, "error")
+                                obj.log("ERROR", "settleCheck timed out and onTimeout=error — aborting.");
+                                obj.transition(State.ERROR);
+                                return;
+                            else
+                                obj.log("WARN", "settleCheck timed out — continuing to next sub-experiment (onTimeout=warn_and_continue).");
+                            end
+                        end
+                    end
+
                     obj.currentExperimentIndex = obj.currentExperimentIndex + 1;
                     obj.setupCurrentExperiment();
                     obj.transition(State.RUNNING);
