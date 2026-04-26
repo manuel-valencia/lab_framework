@@ -42,6 +42,7 @@ classdef (Abstract) ExperimentManager < handle
         FSMtag                      % Precomputed logging FSMtag, e.g., '[FSM:clientID]'
         cmd                         % Command string for current operation
         logDir                      % Folder path for commLog / fsmLog output
+        abortRequested logical = false % Set true when Abort command is received
 
         % settleCheck — inter-run readiness configuration.
         % Controls whether awaitReady() runs between sub-experiments in
@@ -55,8 +56,8 @@ classdef (Abstract) ExperimentManager < handle
         %                             (units defined by the node, e.g. m, degC)
         %   thresholdUnits string    — human-readable unit label for logs
         %   holdDuration_s double    — seconds the signal must stay below threshold
-        %   timeout_s      double    — max wait before giving up (default 120 s)
-        %   onTimeout      string    — 'warn_and_continue' (default) | 'error'
+        %                             before the next sub-experiment is started
+        % awaitReady() blocks indefinitely until settled — there is no timeout.
         settleCheck                 % struct, see above
     end
 
@@ -121,7 +122,7 @@ classdef (Abstract) ExperimentManager < handle
                 fprintf("%s Loaded previous calibration gains from: %s \n", obj.FSMtag, localGainPath);
             catch
                 % Initialize empty bias table when no file found
-                fprintf("[WARN] %s No previous calibrationGains.mat found. \n", obj.FSMtag);
+                fprintf("[WARN] %s No previous calibrationGains.mat found (this is expected for nodes that use other calibration files, e.g., probe_gains.mat).\n", obj.FSMtag);
                 obj.biasTable = struct();
             end
 
@@ -186,6 +187,20 @@ classdef (Abstract) ExperimentManager < handle
                         obj.transition(State.CONFIGUREVALIDATE);
 
                     case "TestValid"
+                        if obj.state ~= State.CONFIGUREPENDING
+                            warning("%s Invalid TestValid from state: %s", obj.FSMtag, string(obj.state));
+                            obj.log("WARN", "Invalid TestValid from state: " + string(obj.state));
+                            obj.transition(State.ERROR);
+                            return;
+                        end
+                        if ~isfield(obj.experimentSpec, "params") || isempty(obj.experimentSpec.params)
+                            obj.log("ERROR", "TestValid received but no pending Test parameters are cached.");
+                            obj.transition(State.ERROR);
+                            return;
+                        end
+                        % Reuse the original Test(actuator) parameters.
+                        % TestValid itself carries no params payload.
+                        obj.cmd = obj.experimentSpec;
                         obj.transition(State.TESTINGACTUATOR);
                         % obj.handleTest(cmd);
 
@@ -196,6 +211,7 @@ classdef (Abstract) ExperimentManager < handle
                             obj.transition(State.ERROR);
                             return;
                         end
+                        obj.abortRequested = false;
                         obj.transition(State.RUNNING);
                         
                     case "Reset"
@@ -244,6 +260,7 @@ classdef (Abstract) ExperimentManager < handle
                 "timestamp", string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS')) ...
             );
             obj.comm.commPublish(obj.comm.getFullTopic("status"), jsonencode(abortMsg));
+            obj.abortRequested = true;
             try
                 obj.stopHardware();
             catch
@@ -478,9 +495,7 @@ classdef (Abstract) ExperimentManager < handle
                 'enabled',        false, ...
                 'threshold',      0, ...
                 'thresholdUnits', 'm', ...
-                'holdDuration_s', 5, ...
-                'timeout_s',      120, ...
-                'onTimeout',      'warn_and_continue' ...
+                'holdDuration_s', 5 ...
             );
 
             % Merge node-level config (obj.settleCheck)
@@ -612,6 +627,7 @@ classdef (Abstract) ExperimentManager < handle
         %--------------------------------------------------------------
         function enterIdle(obj)
             % Called on entry into the IDLE state
+            obj.abortRequested = false;
             obj.stopHardware();
         end
 
@@ -770,24 +786,15 @@ classdef (Abstract) ExperimentManager < handle
                     % call awaitReady().  The base implementation returns
                     % immediately (enabled=false); subclasses override to
                     % implement domain-specific readiness sensing.
+                    % awaitReady() blocks until the node is ready — it does not
+                    % time out.  INTER_RUN_READY is always published on exit.
                     sc = obj.resolveSettleCheck();
                     if sc.enabled
                         obj.log("INFO", sprintf( ...
                             "[POSTPROC] settleCheck enabled — awaiting ready signal before sub-experiment %d.", ...
                             obj.currentExperimentIndex + 1));
-                        ready = obj.awaitReady(sc);
-                        if ready
-                            obj.publishInterRunStatus("INTER_RUN_READY", obj.currentExperimentIndex + 1);
-                        else
-                            obj.publishInterRunStatus("INTER_RUN_TIMEOUT", obj.currentExperimentIndex + 1);
-                            if strcmpi(sc.onTimeout, "error")
-                                obj.log("ERROR", "settleCheck timed out and onTimeout=error — aborting.");
-                                obj.transition(State.ERROR);
-                                return;
-                            else
-                                obj.log("WARN", "settleCheck timed out — continuing to next sub-experiment (onTimeout=warn_and_continue).");
-                            end
-                        end
+                        obj.awaitReady(sc);
+                        obj.publishInterRunStatus("INTER_RUN_READY", obj.currentExperimentIndex + 1);
                     end
 
                     obj.currentExperimentIndex = obj.currentExperimentIndex + 1;
@@ -876,6 +883,10 @@ classdef (Abstract) ExperimentManager < handle
 
         function enterError(obj)
             % Failsafe entry into ERROR state
+            try
+                obj.stopHardware();
+            catch
+            end
             fprintf("%s [ERROR] System faulted. \n", obj.FSMtag);
         end
 

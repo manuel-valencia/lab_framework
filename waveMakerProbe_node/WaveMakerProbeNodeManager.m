@@ -511,8 +511,10 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                             strjoin(arrayfun(@(x) sprintf('H%d',x), sp, 'UniformOutput', false), ', ')));
                     end
 
-                    % Read 1 second, take mean voltage per channel
-                    rawRead = read(obj.daqSession, seconds(1));
+                    % Read 1 second, take mean voltage per channel.
+                    % NI requires readwrite() when both AI and AO channels exist.
+                    nScans = max(1, round(obj.sampleRate * 1.0));
+                    rawRead = readwrite(obj.daqSession, zeros(nScans, 1));
                     rawArr  = mean(rawRead.Variables, 1);   % 1x8
 
                     % Extract only selected probe columns
@@ -550,6 +552,12 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 end
 
                 blockSize = 5;
+                % Start DAQ in background once so the session stays running.
+                % streamOneBlock then calls read() which is non-blocking (pulls from
+                % the live buffer), keeping the MATLAB thread free for MQTT messages.
+                zeroBuf = zeros(obj.sampleRate, 1);   % 1-second zero output (repeats)
+                preload(obj.daqSession, zeroBuf);
+                start(obj.daqSession, "repeatoutput");
                 t = timer('ExecutionMode', 'fixedRate', 'Period', 0.1, 'BusyMode', 'drop', ...
                            'TimerFcn', @(~,~) obj.streamOneBlock(blockSize));
                 obj.log("INFO", "Probe stream timer started (period=0.1 s, 5-scan blocks). Send Reset to stop.");
@@ -558,16 +566,19 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             else  % actuator
                 p = cmd.params;
                 nSamples = round(p.duration * obj.sampleRate);
-                T        = (0 : nSamples-1)' / obj.sampleRate;
+                % Use the exact precomputed preview signal so the plotted waveform
+                % at CONFIGUREPENDING is identical to what is sent to DAQ.
+                if isempty(obj.paddleSignal) || numel(obj.paddleSignal) ~= nSamples
+                    error("WaveMakerProbeNodeManager:ActuatorSignalMissing", ...
+                        "Actuator test requires the precomputed preview paddleSignal; signal is missing or stale. Re-run Configure/Test to regenerate preview before TestValid.");
+                end
 
-                % Convert desired wave height (m) to paddle voltage (V)
-                U_amp = obj.heightToVoltage_V(p.amplitude, p.frequency);
-                paddleSignal = U_amp * sin(2*pi*p.frequency*T);
+                cmdSignal = obj.paddleSignal;
+                V_peak = max(abs(cmdSignal));
+                obj.log("INFO", sprintf("Actuator test: commanding preview paddleSignal (peak %.4f V, %d samples, %.1f s).", ...
+                    V_peak, nSamples, p.duration));
 
-                obj.log("INFO", sprintf("Actuator test: %.4f V @ %.2f Hz for %.1f s (target height %.4f m).", ...
-                    U_amp, p.frequency, p.duration, p.amplitude));
-
-                preload(obj.daqSession, paddleSignal);
+                preload(obj.daqSession, cmdSignal);
                 start(obj.daqSession, "repeatoutput");
                 tStop = timer('ExecutionMode', 'singleShot', 'StartDelay', p.duration, ...
                                'TimerFcn', @(~,~) obj.finishActuatorTest());
@@ -858,7 +869,18 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 end
                 return;
             end
+            % Reset/stop paths can halt the DAQ before this timer callback runs.
+            % In that race window, skip the block quietly.
             try
+                if ~obj.daqSession.Running
+                    return;
+                end
+            catch
+                return;
+            end
+            try
+                % Session is already running (started in handleTest before this timer).
+                % read() pulls from the live buffer without blocking the MATLAB thread.
                 rawRead = read(obj.daqSession, blockSize);
                 rawArr  = mean(rawRead.Variables, 1);   % 1x8 mean
                 heights = rawArr .* obj.probeGains;
@@ -887,11 +909,11 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             % simultaneously acquires all 8 probe channels.
             % Applies gains and mean-centers active probes.
 
-            obj.isCollecting  = true;
-            obj.isGenerating  = true;
+            obj.isCollecting   = true;
+            obj.isGenerating   = true;
+            obj.abortRequested = false;
 
             nSamples = round(obj.duration * obj.sampleRate);
-            T        = (0 : nSamples-1)' / obj.sampleRate;   % Nx1 time vector
 
             % paddleSignal is pre-computed in setupCurrentExperiment (volts).
             % Recompute only if it is missing or stale.
@@ -903,17 +925,63 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.log("INFO", sprintf("handleRun: type='%s', peak=%.4f V, %d samples (%.1f s @ %d Hz).", ...
                 obj.signalType, max(abs(obj.paddleSignal)), nSamples, obj.duration, obj.sampleRate));
 
-            % Preload paddle output, start simultaneous output+acquisition, read probes
+            % Background simultaneous output+acquisition with cooperative polling.
+            % Small read windows + drawnow keep MATLAB responsive so Abort can be
+            % processed during long runs (instead of only after full duration).
             preload(obj.daqSession, obj.paddleSignal);
             start(obj.daqSession, "repeatoutput");
-            rawData = read(obj.daqSession, seconds(obj.duration));
-            stop(obj.daqSession);
+
+            chunkSec = 0.20;   % 200 ms polling window
+            tStart   = tic;
+            rawArr   = [];
+            didAbort = false;
+
+            while toc(tStart) < obj.duration
+                if obj.abortRequested || obj.state == State.ERROR || obj.state == State.IDLE
+                    didAbort = true;
+                    break;
+                end
+
+                tRemain = obj.duration - toc(tStart);
+                thisSec = min(chunkSec, max(tRemain, 0));
+                if thisSec <= 0
+                    break;
+                end
+
+                try
+                    blk = read(obj.daqSession, seconds(thisSec));
+                    if ~isempty(blk) && istimetable(blk)
+                        rawArr = [rawArr; blk.Variables]; %#ok<AGROW>
+                    end
+                catch ME
+                    obj.log("WARN", sprintf("handleRun chunk read failed: %s", ME.message));
+                    didAbort = true;
+                    break;
+                end
+
+                drawnow limitrate;
+            end
+
+            try; stop(obj.daqSession); catch; end
+            try; flush(obj.daqSession); catch; end
             try; write(obj.daqSession, 0); catch; end  % zero paddle immediately after run
+
+            if didAbort
+                obj.isGenerating = false;
+                obj.isCollecting = false;
+                obj.log("WARN", sprintf("handleRun aborted after %.2f s; paddle output halted.", toc(tStart)));
+                return;
+            end
 
             obj.isGenerating = false;
 
             % Apply gains: height(i) = voltage(i) * probeGains(i)
-            rawArr     = rawData.Variables;                  % nSamples x 8
+            if isempty(rawArr)
+                obj.log("ERROR", "handleRun completed with no acquired data.");
+                obj.isCollecting = false;
+                obj.transition(State.ERROR);
+                return;
+            end
             heightData = rawArr .* obj.probeGains;           % broadcast 1x8 gains
 
             % Mean-center each channel (removes DC offset, matches original code)
@@ -921,6 +989,8 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
 
             % Build output struct array for active probes + time column
             fields = [{'nTime'}, arrayfun(@(x) sprintf('H%d',x), obj.activeProbes(:)', 'UniformOutput', false)];
+            nAcq = size(rawArr, 1);
+            T = (0:nAcq-1)' / obj.sampleRate;
             values = [{num2cell(T)}];
             for k = obj.activeProbes(:)'
                 values{end+1} = num2cell(heightData(:, k)); %#ok<AGROW>
@@ -940,7 +1010,8 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.log("INFO", "stopHardware: halting DAQ and zeroing paddle output.");
             try
                 stop(obj.daqSession);
-                write(obj.daqSession, 0);   % safe-zero paddle
+                    flush(obj.daqSession);        % discard any unread background scans
+                    write(obj.daqSession, 0);   % safe-zero paddle
             catch ME
                 obj.log("WARN", sprintf("stopHardware DAQ error: %s", ME.message));
             end
@@ -953,7 +1024,8 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.log("INFO", "shutdownHardware: releasing DAQ resources.");
             try
                 stop(obj.daqSession);
-                write(obj.daqSession, 0);
+                    flush(obj.daqSession);        % discard any unread background scans
+                    write(obj.daqSession, 0);
                 delete(obj.daqSession);
             catch ME
                 obj.log("WARN", sprintf("shutdownHardware DAQ release error: %s", ME.message));
@@ -969,9 +1041,8 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             %
             % Reads the DAQ in rolling windows and computes the half-amplitude
             % (max - min) / 2 for each active probe within each window.
-            % When ALL active probes stay below sc.threshold for the full
-            % sc.holdDuration_s, the tank is considered settled and this
-            % method returns true.  Returns false if sc.timeout_s elapses.
+            % Loops indefinitely until ALL active probes stay below sc.threshold
+            % for the full sc.holdDuration_s, then returns true.
             %
             % Window sizing: at least 2 complete periods of the last-run
             % experiment (so a still-active wave never aliases into calm),
@@ -980,17 +1051,14 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             % NOTE: this method runs synchronously on the MQTT callback thread.
             % Incoming MQTT messages are queued by the broker and processed
             % after awaitReady returns.  This is consistent with the rest of
-            % the framework (handleRun is also synchronous).  For very long
-            % settle times, increase sc.timeout_s to match the expected
-            % tank settling duration.
+            % the framework (handleRun is also synchronous).
             %
             % On the mock, awaitReady is overridden with a synthetic decaying
             % signal so the algorithm is exercised in tests without hardware.
 
-            ready       = false;
-            threshold   = sc.threshold;
-            holdNeeded  = sc.holdDuration_s;
-            timeoutSec  = sc.timeout_s;
+            ready      = true;
+            threshold  = sc.threshold;
+            holdNeeded = sc.holdDuration_s;
 
             % Ensure the DAQ session is stopped and paddle is zeroed before
             % reading probe channels.  handleRun already calls stop+write(0),
@@ -1024,17 +1092,23 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
 
             obj.log("INFO", sprintf( ...
                 "[awaitReady] Waiting for settle: threshold=%.4f %s, hold=%.1f s, " + ...
-                "window=%.1f s, timeout=%.0f s, probes=[%s].", ...
-                threshold, sc.thresholdUnits, holdNeeded, winSec, timeoutSec, ...
+                "window=%.1f s, probes=[%s].", ...
+                threshold, sc.thresholdUnits, holdNeeded, winSec, ...
                 strjoin(arrayfun(@(x) num2str(x), probes, 'UniformOutput', false), ',')));
 
-            while toc(tStart) < timeoutSec
+            % Start background session once: output zeros (paddle safe), acquire probes.
+            % read() inside the loop pulls from the live buffer without per-call overhead.
+            zeroBufAR = zeros(winSamples, 1);
+            preload(obj.daqSession, zeroBufAR);
+            start(obj.daqSession, "repeatoutput");
+
+            while true
                 % Read one window of DAQ data from all 8 channels.
                 try
                     rawBlock = read(obj.daqSession, winSamples);   % winSamples × 8
                     rawArr   = rawBlock.Variables;
                 catch ME
-                    obj.log("WARN", sprintf("[awaitReady] DAQ read error: %s", ME.message));
+                    obj.log("WARN", sprintf("[awaitReady] DAQ read error: %s — stopping settle wait.", ME.message));
                     break;
                 end
 
@@ -1055,8 +1129,8 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                     holdSec = holdSec + winSec;
                     obj.log("INFO", sprintf("[awaitReady] Below threshold — hold %.1f / %.1f s.", holdSec, holdNeeded));
                     if holdSec >= holdNeeded
-                        ready = true;
                         obj.log("INFO", sprintf("[awaitReady] Ready confirmed after %.1f s.", toc(tStart)));
+                        try; stop(obj.daqSession); write(obj.daqSession, 0); catch; end
                         return;
                     end
                 else
@@ -1067,8 +1141,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 end
             end
 
-            obj.log("WARN", sprintf("[awaitReady] Timed out after %.0f s (hold reached %.1f / %.1f s).", ...
-                toc(tStart), holdSec, holdNeeded));
+            try; stop(obj.daqSession); write(obj.daqSession, 0); catch; end
         end
 
     end

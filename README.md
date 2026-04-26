@@ -139,7 +139,7 @@ Each node operates using an 11-state FSM managing the complete experiment lifecy
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/YOUR_REPO/lab_framework.git
+git clone https://github.com/manuel-valencia/lab_framework.git
 cd lab_framework
 ```
 

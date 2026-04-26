@@ -62,38 +62,41 @@ cleanupDiary = onCleanup(@() diary('off')); %#ok<NASGU>
 %% CONFIGURATION
 % =========================================================================
 
-USE_MOCK = true;   % <── flip to false to run against real hardware
+USE_MOCK = false;   % <── flip to false to run against real hardware
 
 RUN_TESTS = struct( ...
     'initialization',   true, ...
-    'probeCalib',       true, ...
-    'sensorTest',       true, ...
-    'actuatorTest',     true, ...
-    'singleRun',        true, ...
+    'probeCalib',       false, ...
+    'sensorTest',       false, ...
+    'actuatorTest',     false, ...
+    'singleRun',        false, ...
     'multiRun',         true, ...
-    'abortRecovery',    true  ...
+    'abortRecovery',    false  ...
 );
+
+% ── Active probes for real testing (applies across all test sections) ─────
+% Only include probes that are physically in the water for this run.
+ACTIVE_PROBES = [1, 3];
 
 % ── T5: signal type selection and per-type parameters ────────────────────
 % Set each type true/false to include or exclude it from T5.
 % Edit the T5_PARAMS fields below to change signal parameters.
-T5_ACTIVE_PROBES = [1, 2, 3];
 
 T5_SIGNAL_TYPES = struct( ...
-    'sinusoidal',       true,  ...
+    'sinusoidal',       false,  ...
     'bretschneider',    false, ...
     'pulse_sinusoidal', false, ...
-    'dual_pulse',       false  ...
+    'dual_pulse',       true  ...
 );
 
 T5_PARAMS = struct();
 T5_PARAMS.sinusoidal = struct( ...
-    'amplitude',  0.05, ...
+    'amplitude',  0.03, ...
     'frequency',  0.5,  ...
-    'duration',   3.0   ...
+    'duration',   30.0   ...
 );
 T5_PARAMS.bretschneider = struct( ...
-    'significantWaveHeight_m', 0.04, ...
+    'significantWaveHeight_m', 0.03, ...
     'modalFrequency_radps',    3.14, ...
     'duration',                5.0   ...
 );
@@ -231,13 +234,14 @@ end
 if RUN_TESTS.probeCalib
     fprintf("\n=== T2: Probe Gain Calibration ===\n");
 
-    selectedProbes = [1, 2, 3];
+    selectedProbes = ACTIVE_PROBES;
     % Three known heights (m)
-    knownHeights   = [0.02, 0.05, 0.10];
+    knownHeights   = [0.0, -0.05, 0.05];
 
     for hi = 1:numel(knownHeights)
         if ~USE_MOCK
-            input(sprintf('[REAL] Set probes [1,2,3] to %.2f m height. Press Enter...', knownHeights(hi)));
+            input(sprintf('[REAL] Set probes [%s] to %.2f m height. Press Enter...', ...
+                strjoin(arrayfun(@num2str, selectedProbes, 'UniformOutput', false), ','), knownHeights(hi)));
         else
             % Set synthetic "water height" for active probes
             node.liveProbeInput(selectedProbes) = knownHeights(hi);
@@ -292,7 +296,7 @@ end
 if RUN_TESTS.sensorTest
     fprintf("\n=== T3: Sensor Test ===\n");
 
-    activeProbes = [1, 2, 3];
+    activeProbes = ACTIVE_PROBES;
 
     % Directly configure active probes without a Run → CONFIGUREPENDING cycle.
     node.setActiveProbes(activeProbes);
@@ -303,6 +307,9 @@ if RUN_TESTS.sensorTest
     if USE_MOCK
         node.liveProbeInput(activeProbes) = [0.03, 0.04, 0.035];
     end
+
+    % Snapshot message-log start index so we can extract only T3 stream packets.
+    t3LogStart = numel(ctrlComm.messageLog) + 1;
     publish(ctrlComm, nodeCmd, struct('cmd','Test','params',struct('target','sensor')));
 
     if ~USE_MOCK
@@ -334,6 +341,68 @@ if RUN_TESTS.sensorTest
     passed2 = string(node.getState()) == "IDLE";
     nPass = nPass + passed2; nFail = nFail + ~passed2;
     logResult("Returns to IDLE after sensor test", passed2);
+
+    % Build a time-series plot from MQTT data packets published during T3.
+    t3Entries = ctrlComm.messageLog(t3LogStart:end);
+    t3Times   = NaT(0,1);
+    probeData = struct();
+    for p = activeProbes
+        probeData.(sprintf('H%d', p)) = [];
+    end
+
+    for i = 1:numel(t3Entries)
+        entry = t3Entries{i};
+        if ~isfield(entry, 'topic') || ~strcmp(entry.topic, sprintf('%s/data', clientID))
+            continue;
+        end
+        try
+            msg = jsondecode(entry.message);
+        catch
+            continue;
+        end
+        if ~isstruct(msg)
+            continue;
+        end
+        if ~isfield(msg, 'type') || ~strcmpi(string(msg.type), "wave_height")
+            continue;
+        end
+
+        t3Times(end+1,1) = entry.timestamp; %#ok<AGROW>
+        for p = activeProbes
+            fName = sprintf('H%d', p);
+            if isfield(msg, fName)
+                probeData.(fName)(end+1,1) = msg.(fName); %#ok<AGROW>
+            else
+                probeData.(fName)(end+1,1) = NaN; %#ok<AGROW>
+            end
+        end
+    end
+
+    if ~isempty(t3Times)
+        t3Sec = seconds(t3Times - t3Times(1));
+        figure('Name', 'T3: Sensor Readings');
+        hold on;
+        for p = activeProbes
+            fName = sprintf('H%d', p);
+            plot(t3Sec, probeData.(fName), 'LineWidth', 1.2, 'DisplayName', fName);
+        end
+        hold off;
+        xlabel('Time since T3 stream start (s)');
+        ylabel('Wave height (m)');
+        title('T3 sensor stream from MQTT data packets');
+        legend('Location', 'best');
+        grid on;
+
+        fprintf("  T3 collected %d packets over %.2f s.\n", numel(t3Sec), t3Sec(end));
+        for p = activeProbes
+            fName = sprintf('H%d', p);
+            y = probeData.(fName);
+            fprintf("    %s: mean=%.5f m, min=%.5f m, max=%.5f m\n", ...
+                fName, mean(y, 'omitnan'), min(y), max(y));
+        end
+    else
+        fprintf("  [WARN] T3: no wave_height packets found in ctrlComm.messageLog for plotting.\n");
+    end
 end
 
 % =========================================================================
@@ -346,7 +415,7 @@ if RUN_TESTS.actuatorTest
     % FSM routes: IDLE → CONFIGUREVALIDATE → CONFIGUREPENDING → (TestValid) → TESTINGACTUATOR → IDLE
     actuatorTestParams = struct( ...
         'target',       'actuator', ...
-        'activeProbes', [1, 2, 3],  ...
+        'activeProbes', ACTIVE_PROBES, ...
         'amplitude',    0.05,       ...
         'frequency',    1.0,        ...
         'duration',     2.0         ...
@@ -437,7 +506,7 @@ if RUN_TESTS.singleRun
         runParams              = T5_PARAMS.(sType);
         runParams.signalType   = sType;
         runParams.name         = sprintf('WaveProbeTest_T5_%s', sType);
-        runParams.activeProbes = T5_ACTIVE_PROBES;
+        runParams.activeProbes = ACTIVE_PROBES;
 
         publish(ctrlComm, nodeCmd, struct('cmd','Run','params',runParams));
 
@@ -554,25 +623,23 @@ end
 if RUN_TESTS.multiRun
     fprintf("\n=== T6: Multi-Experiment Run ===\n");
 
-    % settleCheck config — enabled in this test so that MockWaveMakerProbeNodeManager
-    % exercises the synthetic decaying-wave algorithm between sub-experiments.
-    % The mock settles quickly (tau=2 s) so the test should complete in < 30 s.
+    % settleCheck config — blocks between sub-experiments until all active
+    % probes stay below threshold for holdDuration_s.  No timeout; the node
+    % waits as long as the tank needs.
     settleCheckCfg = struct( ...
         'enabled',        true, ...
-        'threshold',      0.005, ...    % 5 mm (mock signal decays well below this)
+        'threshold',      0.005, ...    % 5 mm half-amplitude
         'thresholdUnits', 'm', ...
-        'holdDuration_s', 2.0, ...
-        'timeout_s',      30, ...
-        'onTimeout',      'warn_and_continue' ...
+        'holdDuration_s', 5.0  ...
     );
 
     multiParams = struct( ...
         'name',        'WaveProbeTest_Multi', ...
         'settleCheck', settleCheckCfg, ...
         'experiments', [ ...
-            struct('name','Low_Slow',  'activeProbes',[1,2,3], 'amplitude',0.02,'frequency',0.5,'duration',1.5), ...
-            struct('name','Mid_Mid',   'activeProbes',[1,2,3], 'amplitude',0.05,'frequency',1.0,'duration',1.0), ...
-            struct('name','High_Fast', 'activeProbes',[1,2,3], 'amplitude',0.04,'frequency',2.0,'duration',1.0)  ...
+            struct('name','Low_Slow',  'activeProbes',ACTIVE_PROBES, 'amplitude',0.01,'frequency',0.5,'duration',20.0), ...
+            struct('name','Mid_Mid',   'activeProbes',ACTIVE_PROBES, 'amplitude',0.015,'frequency',1.0,'duration',10.0), ...
+            struct('name','High_Fast', 'activeProbes',ACTIVE_PROBES, 'amplitude',0.02,'frequency',2.0,'duration',10.0)  ...
         ] ...
     );
 
@@ -634,11 +701,10 @@ if RUN_TESTS.multiRun
         publish(ctrlComm, nodeCmd, struct('cmd','RunValid'));
     end
 
-    % Generous timeout:
-    %   run durations: 1.5 + 1.0 + 1.0 = 3.5 s
-    %   up to 2 settle checks × 30 s timeout each = 60 s (worst case)
-    %   + 10 s headroom
-    totalDuration = 3.5 + 60 + 10;
+    % Script-side timeout: run durations (40 s) + generous headroom for settling.
+    % awaitReady blocks indefinitely on the node side, so this timeout only
+    % guards against the script hanging if the node crashes before reaching IDLE.
+    totalDuration = 40 + 120 + 10;
     timeout = tic;
     while string(node.getState()) ~= "IDLE" && toc(timeout) < totalDuration
         pause(0.05);
@@ -675,6 +741,70 @@ if RUN_TESTS.multiRun
         nPass = nPass + passed; nFail = nFail + ~passed;
         logResult(sprintf("CSV saved for sub-experiment '%s'", expNames{i}), passed);
     end
+
+    % ── Plot acquired probe data loaded from saved CSVs ───────────────────
+    if exist(dataDir, 'dir')
+        nExpsPlot = numel(expNames);
+        figure('Name', 'T6: Multi-Run Acquired Data');
+        sgtitle('T6: Probe data per sub-experiment', 'Interpreter', 'none');
+        for i = 1:nExpsPlot
+            csvPattern = fullfile(dataDir, sprintf('*%s*.csv', expNames{i}));
+            files = dir(csvPattern);
+            subplot(nExpsPlot, 1, i);
+            hold on;
+            if ~isempty(files)
+                try
+                    tbl = readtable(fullfile(dataDir, files(1).name));
+                    for k = ACTIVE_PROBES(:)'
+                        hField = sprintf('H%d', k);
+                        if any(strcmp(tbl.Properties.VariableNames, hField))
+                            plot(tbl.nTime, tbl.(hField), 'LineWidth', 1.2, 'DisplayName', hField);
+                        end
+                    end
+                    legend('Location', 'best');
+                catch ME
+                    text(0.1, 0.5, sprintf('Load error: %s', ME.message), 'Units', 'normalized');
+                end
+            else
+                text(0.1, 0.5, 'CSV not found', 'Units', 'normalized');
+            end
+            title(expNames{i}, 'Interpreter', 'none');
+            ylabel('Height (m)');
+            grid on;
+            hold off;
+        end
+        xlabel('Time (s)');
+        drawnow;
+    else
+        fprintf("  [WARN] T6: data directory not found for plotting: %s\n", dataDir);
+    end
+
+    % ── Settle check gate evidence from MQTT status log ───────────────────
+    fprintf("\n  [T6] Settle check gate log:\n");
+    interRunGaps = {};
+    for i = 1:numel(ctrlComm.messageLog)
+        entry = ctrlComm.messageLog{i};
+        if ~isfield(entry, 'message'); continue; end
+        if contains(entry.message, 'INTER_RUN_READY')
+            interRunGaps{end+1} = entry; %#ok<AGROW>
+        end
+    end
+    if isempty(interRunGaps)
+        fprintf("    [WARN] No INTER_RUN_READY/TIMEOUT messages found — settleCheck may not have run.\n");
+    else
+        for i = 1:numel(interRunGaps)
+            try
+                decoded = jsondecode(interRunGaps{i}.message);
+                nextName = '';
+                if isfield(decoded, 'nextExpName'), nextName = decoded.nextExpName; end
+                ts = '';
+                if isfield(interRunGaps{i}, 'timestamp'), ts = string(interRunGaps{i}.timestamp); end
+                fprintf("    Gap %d → %-20s  [%-20s]  at %s\n", i, nextName, decoded.state, ts);
+            catch
+                fprintf("    Gap %d: %s\n", i, interRunGaps{i}.message);
+            end
+        end
+    end
 end
 
 % =========================================================================
@@ -685,7 +815,7 @@ if RUN_TESTS.abortRecovery
 
     % Start a long run so RUNNING state is reachable
     publish(ctrlComm, nodeCmd, struct('cmd','Run','params', ...
-        struct('name','AbortTest','activeProbes',[1,2],'amplitude',0.05, ...
+        struct('name','AbortTest','activeProbes',ACTIVE_PROBES,'amplitude',0.05, ...
                'frequency',1.0,'duration',60)));
 
     timeout = tic;
