@@ -22,13 +22,18 @@ import json
 import time
 import signal
 import logging
+import threading
 
 # Add repo root to path so pythonCommon is importable
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
+from flask import Flask, request, jsonify, send_from_directory
 from pythonCommon.CommClient import CommClient
 from pythonCommon.RestClient import RestClient
+
+WEBAPP_DIR    = os.path.join(REPO_ROOT, "network", "webapp")
+TEMPLATES_DIR = os.path.join(REPO_ROOT, "config", "templates")
 
 
 def setup_logging(log_dir: str) -> logging.Logger:
@@ -83,11 +88,78 @@ class ControlNode:
         self.cfg['onMessageCallback'] = self._on_message
 
     def connect(self):
-        """Connect to the MQTT broker."""
+        """Connect to the MQTT broker and start the web UI server."""
         self.comm.connect()
         self.logger.info("ControlNode connected to broker at %s:%d",
                          self.cfg.get('brokerAddress', 'localhost'),
                          self.cfg.get('brokerPort', 1883))
+        self._start_web_server()
+
+    def _start_web_server(self):
+        """
+        Starts the Tow Tank web UI on port 8080 in a background daemon thread.
+
+        Routes:
+          GET  /                        — serves network/webapp/index.html
+          GET  /api/nodes               — live node registry (in-memory)
+          GET  /api/templates           — list available experiment templates
+          GET  /api/templates/<name>    — return a specific template's JSON
+          POST /api/command/<node_id>   — send a command to a node via MQTT
+
+        The thread is a daemon so it is automatically killed when the main
+        process exits. use_reloader=False prevents Werkzeug from forking a
+        child process (which would conflict with the MQTT loop).
+        """
+        web = Flask(__name__, static_folder=WEBAPP_DIR)
+
+        # Suppress Werkzeug request logs to keep ControlNode logs readable
+        logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+        @web.route("/")
+        def index():
+            return send_from_directory(WEBAPP_DIR, "index.html")
+
+        @web.route("/api/nodes")
+        def api_nodes():
+            return jsonify(self.node_registry)
+
+        @web.route("/api/templates")
+        def api_templates():
+            if not os.path.isdir(TEMPLATES_DIR):
+                return jsonify([])
+            names = [
+                f for f in os.listdir(TEMPLATES_DIR)
+                if f.endswith(".json")
+            ]
+            return jsonify(sorted(names))
+
+        @web.route("/api/templates/<name>")
+        def api_template(name):
+            # Basename-only to prevent path traversal
+            safe = os.path.basename(name)
+            path = os.path.join(TEMPLATES_DIR, safe)
+            if not os.path.isfile(path):
+                return jsonify({"error": f"Template '{safe}' not found"}), 404
+            with open(path) as f:
+                return jsonify(json.load(f))
+
+        @web.route("/api/command/<node_id>", methods=["POST"])
+        def api_command(node_id):
+            body = request.get_json(silent=True)
+            if not body or "cmd" not in body:
+                return jsonify({"error": "Request body must be JSON with a 'cmd' field"}), 400
+            self.send_command(node_id, body)
+            return jsonify({"status": "sent", "node": node_id, "cmd": body["cmd"]})
+
+        port = self.cfg.get("webPort", 8080)
+        t = threading.Thread(
+            target=lambda: web.run(host="0.0.0.0", port=port,
+                                   use_reloader=False, threaded=True),
+            name="web-server",
+            daemon=True
+        )
+        t.start()
+        self.logger.info("Web UI available at http://0.0.0.0:%d", port)
 
     def send_command(self, node_id: str, cmd: dict):
         """

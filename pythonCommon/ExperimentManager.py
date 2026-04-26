@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import pickle
+import sys
 import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -76,7 +77,7 @@ class ExperimentManager(ABC):
     # Supported command keywords
     VALID_COMMANDS = [
         "Calibrate", "Test", "Run", "TestValid",
-        "RunValid", "Reset", "Abort"
+        "RunValid", "Reset", "Abort", "Update"
     ]
     
     def __init__(self, cfg: Dict[str, Any], comm: CommClient, rest: RestClient):
@@ -218,6 +219,25 @@ class ExperimentManager(ABC):
                 
             elif cmd_name == "Abort":
                 self.abort("User request via command.")
+
+            elif cmd_name == "Update":
+                # Update: only accepted from IDLE. Node publishes UPDATING,
+                # shuts down cleanly, then exits with code 42 so that
+                # pull_and_deploy.sh re-pulls the latest code and relaunches.
+                if self.state != State.IDLE:
+                    self.log("WARN", f"Update command ignored — node is not IDLE (state: {self.state.name}). Reset first.")
+                    return
+                self.log("INFO", "Update command received. Shutting down for code update...")
+                update_msg = {
+                    "state": "UPDATING",
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                }
+                self.comm.comm_publish(self.comm.get_full_topic("status"), json.dumps(update_msg))
+                try:
+                    self.shutdown_hardware()
+                except Exception:
+                    pass
+                sys.exit(42)
                 
         except Exception as e:
             error_msg = (f"Command handler error:\n"

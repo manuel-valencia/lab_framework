@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tow Tank Control</title>
+
+  <!-- Dependencies from CDN — no build step required -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0f172a;
+      --surface:  #1e293b;
+      --border:   #334155;
+      --text:     #e2e8f0;
+      --muted:    #94a3b8;
+      --accent:   #38bdf8;
+    }
+    body { background: var(--bg); color: var(--text); font-family: ui-monospace, monospace; font-size: 14px; }
+    a { color: var(--accent); text-decoration: none; }
+
+    /* ── Layout ───────────────────────────────────────────────── */
+    header { display:flex; align-items:center; gap:12px; padding:12px 20px; background:var(--surface); border-bottom:1px solid var(--border); }
+    header h1 { font-size:1.1rem; letter-spacing:.05em; }
+    .conn-badge { margin-left:auto; font-size:.75rem; padding:3px 8px; border-radius:4px; font-weight:600; }
+
+    nav { display:flex; gap:4px; padding:10px 20px; background:var(--surface); border-bottom:1px solid var(--border); }
+    nav button { background:none; border:1px solid transparent; color:var(--muted); padding:5px 14px; border-radius:4px; cursor:pointer; font-family:inherit; font-size:.85rem; transition:.15s; }
+    nav button.active, nav button:hover { color:var(--text); border-color:var(--border); background:var(--bg); }
+
+    main { padding:20px; max-width:1400px; margin:0 auto; }
+    .tab { display:none; } .tab.active { display:block; }
+
+    /* ── Cards ────────────────────────────────────────────────── */
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px; }
+    .card-title { font-size:.7rem; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin-bottom:10px; }
+
+    /* ── Node grid ────────────────────────────────────────────── */
+    .node-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
+    .node-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px; position:relative; }
+    .node-name { font-weight:700; font-size:.9rem; }
+    .node-state { font-size:.75rem; font-weight:700; padding:2px 8px; border-radius:3px; display:inline-block; margin-top:4px; }
+    .node-meta  { font-size:.7rem; color:var(--muted); margin-top:6px; line-height:1.6; }
+    .node-online { border-left:3px solid #22c55e; }
+    .node-offline { border-left:3px solid #64748b; opacity:.6; }
+
+    /* state colours */
+    .s-IDLE             { background:#14532d; color:#86efac; }
+    .s-RUNNING          { background:#1e3a5f; color:#93c5fd; }
+    .s-CALIBRATING      { background:#451a03; color:#fcd34d; }
+    .s-CONFIGUREVALIDATE,
+    .s-CONFIGUREPENDING { background:#431407; color:#fb923c; }
+    .s-TESTINGSENSOR,
+    .s-TESTINGACTUATOR  { background:#3b0764; color:#d8b4fe; }
+    .s-POSTPROC,
+    .s-DONE             { background:#042f2e; color:#5eead4; }
+    .s-ERROR            { background:#450a0a; color:#fca5a5; }
+    .s-UPDATING         { background:#431407; color:#fb923c; }
+    .s-BOOT,
+    .s-UNKNOWN          { background:#1e293b; color:#94a3b8; }
+
+    /* ── Forms & inputs ───────────────────────────────────────── */
+    label { display:block; font-size:.75rem; color:var(--muted); margin-bottom:4px; }
+    input, select, textarea {
+      width:100%; background:var(--bg); border:1px solid var(--border);
+      color:var(--text); padding:6px 10px; border-radius:4px; font-family:inherit; font-size:.85rem;
+    }
+    input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); }
+    textarea { resize:vertical; }
+    .form-row { margin-bottom:10px; }
+
+    button.btn {
+      cursor:pointer; border:none; border-radius:4px; padding:6px 16px;
+      font-family:inherit; font-size:.82rem; font-weight:600; transition:.15s;
+    }
+    button.btn-primary   { background:var(--accent); color:#0f172a; }
+    button.btn-secondary { background:var(--border); color:var(--text); }
+    button.btn-danger    { background:#7f1d1d; color:#fca5a5; }
+    button.btn:hover     { filter:brightness(1.15); }
+    button.btn:disabled  { opacity:.4; cursor:not-allowed; }
+
+    /* ── Command buttons row ─────────────────────────────────── */
+    .cmd-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+
+    /* ── Log feed ─────────────────────────────────────────────── */
+    #log-feed { height:60vh; overflow-y:auto; background:var(--bg); border:1px solid var(--border);
+                border-radius:6px; padding:10px; font-size:.78rem; line-height:1.7; }
+    .log-line { white-space:pre-wrap; word-break:break-all; }
+    .log-ERROR { color:#fca5a5; }
+    .log-WARN  { color:#fcd34d; }
+    .log-INFO  { color:var(--text); }
+    .log-DEBUG { color:var(--muted); }
+
+    /* ── JSON editor ──────────────────────────────────────────── */
+    #json-editor { min-height:340px; font-size:.78rem; }
+
+    /* ── Misc ─────────────────────────────────────────────────── */
+    .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    @media(max-width:640px){ .grid-2{ grid-template-columns:1fr; } }
+    .mt { margin-top:12px; }
+    .flash { font-size:.75rem; color:#86efac; min-height:1.2em; }
+    .flash.err { color:#fca5a5; }
+    .section-title { font-size:.75rem; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:16px 0 8px; }
+  </style>
+</head>
+
+<body x-data="app()" x-init="init()">
+
+  <!-- ── Header ──────────────────────────────────────────────── -->
+  <header>
+    <h1>&#127695; Tow Tank Control</h1>
+    <span class="conn-badge"
+          :style="mqttConnected
+            ? 'background:#14532d;color:#86efac'
+            : 'background:#450a0a;color:#fca5a5'">
+      <span x-text="mqttConnected ? '● MQTT connected' : '○ MQTT disconnected'"></span>
+    </span>
+  </header>
+
+  <!-- ── Tab nav ─────────────────────────────────────────────── -->
+  <nav>
+    <template x-for="t in tabs" :key="t">
+      <button :class="{active: activeTab===t}" @click="activeTab=t" x-text="t"></button>
+    </template>
+  </nav>
+
+  <main>
+
+    <!-- ════════════════ SYSTEM TAB ═════════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='System'}">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <span class="section-title" style="margin:0">Discovered nodes</span>
+        <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem" @click="pollNodes()">Refresh</button>
+        <span style="font-size:.7rem;color:var(--muted)" x-text="'Last updated: '+lastPoll"></span>
+      </div>
+
+      <div x-show="Object.keys(nodes).length===0" style="color:var(--muted);font-size:.85rem">
+        No nodes discovered yet. Waiting for MQTT status messages…
+      </div>
+
+      <div class="node-grid">
+        <template x-for="[id, node] in Object.entries(nodes)" :key="id">
+          <div class="node-card" :class="node.online ? 'node-online' : 'node-offline'">
+            <div class="node-name" x-text="id"></div>
+            <div class="node-state" :class="'s-'+(node.state||'UNKNOWN')" x-text="node.state||'—'"></div>
+            <div class="node-meta">
+              <div x-text="'IP: '+(node.ip||'—')"></div>
+              <div x-text="'Last seen: '+(node.lastSeen||'—')"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ════════════════ CONTROL TAB ════════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='Control'}">
+      <div class="grid-2">
+
+        <!-- Left: node selector + commands -->
+        <div class="card">
+          <div class="card-title">Node commands</div>
+
+          <div class="form-row">
+            <label>Target node</label>
+            <select x-model="cmdTarget">
+              <option value="">— select a node —</option>
+              <template x-for="[id] in Object.entries(nodes)" :key="id">
+                <option :value="id" x-text="id"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="section-title">FSM commands</div>
+          <div class="cmd-list">
+            <template x-for="cmd in fsmCommands" :key="cmd">
+              <button class="btn btn-secondary" :disabled="!cmdTarget"
+                      @click="sendCmd(cmdTarget, {cmd})"
+                      x-text="cmd"></button>
+            </template>
+          </div>
+
+          <div class="section-title">Run experiment</div>
+          <div class="form-row">
+            <label>Run ID / tag</label>
+            <input type="text" x-model="runTag" placeholder="e.g. run_001" />
+          </div>
+          <div class="form-row">
+            <label>Parameters (JSON)</label>
+            <textarea rows="4" x-model="runParams" placeholder='{"speed":0.5,"duration":30}'></textarea>
+          </div>
+          <button class="btn btn-primary" :disabled="!cmdTarget"
+                  @click="sendCmd(cmdTarget, {cmd:'Run', tag:runTag, params: safeParseJSON(runParams)})">
+            Send Run
+          </button>
+          <div class="flash mt" :class="{err: cmdFlash.startsWith('Error')}" x-text="cmdFlash"></div>
+        </div>
+
+        <!-- Right: broadcast -->
+        <div class="card">
+          <div class="card-title">Broadcast to all nodes</div>
+          <div class="cmd-list">
+            <template x-for="cmd in ['Reset','Shutdown','Update']" :key="cmd">
+              <button class="btn btn-danger"
+                      @click="broadcastCmd({cmd})"
+                      x-text="'⚠ '+cmd+' ALL'"></button>
+            </template>
+          </div>
+          <div class="flash mt" :class="{err: broadcastFlash.startsWith('Error')}" x-text="broadcastFlash"></div>
+
+          <div class="section-title" style="margin-top:20px">Raw MQTT publish</div>
+          <div class="form-row">
+            <label>Topic</label>
+            <input type="text" x-model="rawTopic" placeholder="nodeId/cmd" />
+          </div>
+          <div class="form-row">
+            <label>Payload (JSON)</label>
+            <textarea rows="3" x-model="rawPayload" placeholder='{"cmd":"Reset"}'></textarea>
+          </div>
+          <button class="btn btn-secondary" @click="publishRaw()">Publish</button>
+          <div class="flash mt" :class="{err: rawFlash.startsWith('Error')}" x-text="rawFlash"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════ EXPERIMENT TAB ═════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='Experiment'}">
+      <div class="grid-2">
+
+        <!-- Template browser -->
+        <div class="card">
+          <div class="card-title">Experiment templates</div>
+          <div x-show="templates.length===0" style="color:var(--muted);font-size:.82rem">
+            No templates found in config/templates/.
+          </div>
+          <template x-for="t in templates" :key="t">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <span style="flex:1;font-size:.82rem" x-text="t"></span>
+              <button class="btn btn-secondary" style="padding:2px 10px;font-size:.75rem"
+                      @click="loadTemplate(t)">Load</button>
+            </div>
+          </template>
+        </div>
+
+        <!-- JSON editor -->
+        <div class="card">
+          <div class="card-title">Loaded template</div>
+          <div class="form-row">
+            <label>Template name</label>
+            <input type="text" x-model="loadedName" placeholder="my_experiment.json" />
+          </div>
+          <div class="form-row">
+            <label>JSON content</label>
+            <textarea id="json-editor" x-model="loadedJSON" spellcheck="false"
+                      placeholder="Load a template or type JSON here…"></textarea>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary"
+                    @click="sendCmd(cmdTarget, {cmd:'Configure', config: safeParseJSON(loadedJSON)})"
+                    :disabled="!cmdTarget">
+              Configure node
+            </button>
+          </div>
+          <div class="flash mt" :class="{err: tplFlash.startsWith('Error')}" x-text="tplFlash"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════ LOG TAB ════════════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='Log'}">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+        <span class="section-title" style="margin:0">Live log feed (+/log)</span>
+        <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem"
+                @click="logLines=[]">Clear</button>
+        <label style="margin:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" x-model="logAutoScroll" style="width:auto" />
+          <span style="font-size:.75rem;color:var(--muted)">Auto-scroll</span>
+        </label>
+        <label style="margin:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" x-model="logDebug" style="width:auto" />
+          <span style="font-size:.75rem;color:var(--muted)">Show DEBUG</span>
+        </label>
+      </div>
+      <div id="log-feed">
+        <template x-for="(line, i) in visibleLogs" :key="i">
+          <div class="log-line" :class="'log-'+line.level" x-text="line.text"></div>
+        </template>
+      </div>
+    </div>
+
+  </main><!-- /main -->
+
+  <script>
+  function app() {
+    return {
+      // ── Tab state ──────────────────────────────────────────────
+      tabs: ['System', 'Control', 'Experiment', 'Log'],
+      activeTab: 'System',
+
+      // ── MQTT ───────────────────────────────────────────────────
+      mqttClient: null,
+      mqttConnected: false,
+
+      // ── Node registry ──────────────────────────────────────────
+      nodes: {},          // { nodeId: {state, ip, lastSeen, online} }
+      lastPoll: '—',
+
+      // ── Control tab ────────────────────────────────────────────
+      cmdTarget: '',
+      runTag: '',
+      runParams: '',
+      cmdFlash: '',
+      broadcastFlash: '',
+      rawTopic: '',
+      rawPayload: '',
+      rawFlash: '',
+
+      fsmCommands: ['Reset','Calibrate','TestSensor','ConfigureValidate','ConfigurePending',
+                    'TestActuator','Run','Stop','PostProc','Shutdown','Update'],
+
+      // ── Experiment tab ─────────────────────────────────────────
+      templates: [],
+      loadedName: '',
+      loadedJSON: '',
+      tplFlash: '',
+
+      // ── Log tab ────────────────────────────────────────────────
+      logLines: [],       // [{level, text}]
+      logAutoScroll: true,
+      logDebug: false,
+      MAX_LOG_LINES: 500,
+
+      get visibleLogs() {
+        return this.logDebug
+          ? this.logLines
+          : this.logLines.filter(l => l.level !== 'DEBUG');
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  init
+      // ══════════════════════════════════════════════════════════
+      init() {
+        this.connectMQTT();
+        this.pollNodes();
+        this.pollTemplates();
+        // Periodic REST fallback every 10 s
+        setInterval(() => this.pollNodes(), 10_000);
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  MQTT
+      // ══════════════════════════════════════════════════════════
+      connectMQTT() {
+        const url = `ws://${location.hostname}:9001/mqtt`;
+        this.mqttClient = mqtt.connect(url, {
+          clientId: 'towtank-ui-' + Math.random().toString(16).slice(2, 8),
+          reconnectPeriod: 3000,
+          connectTimeout: 8000,
+        });
+
+        this.mqttClient.on('connect', () => {
+          this.mqttConnected = true;
+          this.mqttClient.subscribe('+/status');
+          this.mqttClient.subscribe('+/log');
+          this.addLog('INFO', '[MQTT] Connected to broker');
+        });
+
+        this.mqttClient.on('reconnect', () => {
+          this.mqttConnected = false;
+          this.addLog('WARN', '[MQTT] Reconnecting…');
+        });
+
+        this.mqttClient.on('offline', () => {
+          this.mqttConnected = false;
+        });
+
+        this.mqttClient.on('error', (err) => {
+          this.addLog('ERROR', '[MQTT] ' + err.message);
+        });
+
+        this.mqttClient.on('message', (topic, payload) => {
+          this.handleMQTT(topic, payload.toString());
+        });
+      },
+
+      handleMQTT(topic, raw) {
+        const parts = topic.split('/');
+        const nodeId = parts[0];
+        const channel = parts[1];
+
+        let msg = {};
+        try { msg = JSON.parse(raw); } catch { msg = { raw }; }
+
+        if (channel === 'status') {
+          const existing = this.nodes[nodeId] || {};
+          this.nodes[nodeId] = {
+            ...existing,
+            state:    msg.state    || existing.state || 'UNKNOWN',
+            ip:       msg.ip       || existing.ip    || '—',
+            lastSeen: new Date().toLocaleTimeString(),
+            online:   true,
+          };
+          // Trigger Alpine reactivity
+          this.nodes = { ...this.nodes };
+        }
+
+        if (channel === 'log') {
+          const level = msg.level || 'INFO';
+          const text  = `[${nodeId}] ${msg.message || raw}`;
+          this.addLog(level, text);
+        }
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  REST helpers
+      // ══════════════════════════════════════════════════════════
+      async pollNodes() {
+        try {
+          const res  = await fetch('/api/nodes');
+          const data = await res.json();
+          // Merge REST snapshot — don't overwrite live MQTT data for online nodes
+          for (const [id, info] of Object.entries(data)) {
+            if (!this.nodes[id]) this.nodes[id] = info;
+          }
+          this.nodes    = { ...this.nodes };
+          this.lastPoll = new Date().toLocaleTimeString();
+        } catch { /* offline */ }
+      },
+
+      async pollTemplates() {
+        try {
+          const res = await fetch('/api/templates');
+          this.templates = await res.json();
+        } catch { this.templates = []; }
+      },
+
+      async loadTemplate(name) {
+        try {
+          const res  = await fetch(`/api/templates/${encodeURIComponent(name)}`);
+          const data = await res.json();
+          this.loadedName = name;
+          this.loadedJSON = JSON.stringify(data, null, 2);
+          this.tplFlash   = `Loaded ${name}`;
+          this.activeTab  = 'Experiment';
+        } catch (e) {
+          this.tplFlash = 'Error: ' + e.message;
+        }
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Command dispatch
+      // ══════════════════════════════════════════════════════════
+      async sendCmd(nodeId, body) {
+        if (!nodeId) { this.cmdFlash = 'Error: no node selected'; return; }
+        try {
+          const res = await fetch(`/api/command/${encodeURIComponent(nodeId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          this.cmdFlash = `Sent '${body.cmd}' to ${nodeId}`;
+          this.tplFlash = `Sent '${body.cmd}' to ${nodeId}`;
+          setTimeout(() => { this.cmdFlash = ''; this.tplFlash = ''; }, 3000);
+        } catch (e) {
+          this.cmdFlash = 'Error: ' + e.message;
+          this.tplFlash = 'Error: ' + e.message;
+        }
+      },
+
+      async broadcastCmd(body) {
+        const ids = Object.keys(this.nodes);
+        if (ids.length === 0) { this.broadcastFlash = 'No nodes known'; return; }
+        let sent = 0;
+        for (const id of ids) {
+          await this.sendCmd(id, body).catch(() => {});
+          sent++;
+        }
+        this.broadcastFlash = `Broadcast '${body.cmd}' to ${sent} nodes`;
+        setTimeout(() => { this.broadcastFlash = ''; }, 4000);
+      },
+
+      publishRaw() {
+        if (!this.mqttClient || !this.mqttConnected) {
+          this.rawFlash = 'Error: MQTT not connected';
+          return;
+        }
+        if (!this.rawTopic) { this.rawFlash = 'Error: topic is required'; return; }
+        let payload = this.rawPayload;
+        try { JSON.parse(payload); } catch { payload = JSON.stringify({ raw: payload }); }
+        this.mqttClient.publish(this.rawTopic, payload);
+        this.rawFlash = `Published to ${this.rawTopic}`;
+        setTimeout(() => { this.rawFlash = ''; }, 2000);
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Log feed
+      // ══════════════════════════════════════════════════════════
+      addLog(level, text) {
+        const ts = new Date().toLocaleTimeString();
+        this.logLines.push({ level: level.toUpperCase(), text: `${ts}  ${text}` });
+        if (this.logLines.length > this.MAX_LOG_LINES) {
+          this.logLines.splice(0, this.logLines.length - this.MAX_LOG_LINES);
+        }
+        if (this.logAutoScroll) {
+          this.$nextTick(() => {
+            const el = document.getElementById('log-feed');
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Utilities
+      // ══════════════════════════════════════════════════════════
+      safeParseJSON(str) {
+        if (!str || !str.trim()) return undefined;
+        try { return JSON.parse(str); }
+        catch { return str; }
+      },
+    };
+  }
+  </script>
+</body>
+</html>

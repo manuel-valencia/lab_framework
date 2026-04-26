@@ -66,7 +66,7 @@ classdef (Abstract) ExperimentManager < handle
     properties (Constant)
         % Supported command keywords
         validCommands = ["Calibrate", "Test", "Run", "TestValid", ...
-                         "RunValid", "Reset", "Abort"];
+                         "RunValid", "Reset", "Abort", "Update"];
     end
 
     %==================================================================
@@ -203,6 +203,23 @@ classdef (Abstract) ExperimentManager < handle
 
                     case "Abort"
                         obj.abort("User request via command.");
+
+                    case "Update"
+                        % Update: only accepted from IDLE. Node publishes UPDATING,
+                        % shuts down cleanly, then exits with code 42 so that
+                        % pull_and_deploy.sh re-pulls the latest code and relaunches.
+                        if obj.state ~= State.IDLE
+                            obj.log("WARN", "Update command ignored — node is not IDLE (state: " + string(obj.state) + "). Reset first.");
+                            return;
+                        end
+                        obj.log("INFO", "Update command received. Shutting down for code update...");
+                        updateMsg = struct( ...
+                            "state",     "UPDATING", ...
+                            "timestamp", string(datetime('now','Format','yyyy-MM-dd HH:mm:ss.SSS')) ...
+                        );
+                        obj.comm.commPublish(obj.comm.getFullTopic("status"), jsonencode(updateMsg));
+                        try; obj.shutdown(); catch; end
+                        exit(42);
                 end
                 
             catch ME

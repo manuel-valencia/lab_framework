@@ -177,8 +177,15 @@ class CommClient:
                 if self.verbose:
                     self.logger.info(f"Attempting to connect to MQTT broker at {self.broker_address}:{self.broker_port}")
                 
-                # Create MQTT client
-                self.mqtt_client = mqtt.Client(self.client_id)
+                # Create MQTT client — paho-mqtt 2.0+ requires callback_api_version
+                try:
+                    self.mqtt_client = mqtt.Client(
+                        mqtt.CallbackAPIVersion.VERSION1,
+                        self.client_id
+                    )
+                except AttributeError:
+                    # paho-mqtt < 2.0 fallback
+                    self.mqtt_client = mqtt.Client(self.client_id)
                 
                 # Set up callbacks
                 self.mqtt_client.on_connect = self._on_connect

@@ -1,0 +1,30 @@
+{
+  "_description": "Sweep of carriage speeds — runs repeated at each speed level",
+  "runId": "multi_speed_sweep_001",
+  "runs": [
+    {
+      "runTag": "slow",
+      "carriageProfile": { "type": "constant", "speed_m_s": 0.25, "rampUp_s": 2.0, "duration_s": 20.0, "rampDown_s": 2.0 },
+      "wavemaker": { "enabled": false }
+    },
+    {
+      "runTag": "medium",
+      "carriageProfile": { "type": "constant", "speed_m_s": 0.50, "rampUp_s": 2.0, "duration_s": 20.0, "rampDown_s": 2.0 },
+      "wavemaker": { "enabled": false }
+    },
+    {
+      "runTag": "fast",
+      "carriageProfile": { "type": "constant", "speed_m_s": 1.00, "rampUp_s": 3.0, "duration_s": 20.0, "rampDown_s": 3.0 },
+      "wavemaker": { "enabled": false }
+    }
+  ],
+  "dataSampling": {
+    "rate_hz": 100,
+    "channels": ["force_x", "force_y", "force_z", "moment_x", "moment_y", "moment_z"]
+  },
+  "postProcessing": {
+    "trimStart_s": 2.5,
+    "trimEnd_s": 2.5,
+    "saveRaw": true
+  }
+}
