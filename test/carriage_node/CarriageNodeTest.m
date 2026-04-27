@@ -207,7 +207,8 @@ if RUN_TESTS.forceCalib
     end
 
     passed1 = string(node.getState()) == "IDLE";
-    passed2 = isfile(fullfile(testDir, 'carriageCalibration.mat'));
+    expectedCalFile = node.calibrationFile;
+    passed2 = isfile(expectedCalFile);
     passed3 = ~isempty(node.biasVoltages) && numel(node.biasVoltages) == 6;
 
     nPass = nPass + passed1; nFail = nFail + ~passed1;
@@ -215,7 +216,7 @@ if RUN_TESTS.forceCalib
     nPass = nPass + passed3; nFail = nFail + ~passed3;
 
     logResult("Returns to IDLE after force_bias", passed1);
-    logResult("carriageCalibration.mat created (test/carriage_node/)", passed2);
+    logResult(sprintf("Calibration file exists (%s)", expectedCalFile), passed2);
     logResult("biasVoltages populated (1×6)", passed3);
 
     if passed3
@@ -272,7 +273,8 @@ if RUN_TESTS.motionCalib
     end
 
     passed1 = string(node.getState()) == "IDLE";
-    passed2 = isfile(fullfile(testDir, 'carriageCalibration.mat'));
+    expectedCalFile = node.calibrationFile;
+    passed2 = isfile(expectedCalFile);
     passed3 = ~isempty(fieldnames(node.motionCalib)) && ...
               isfield(node.motionCalib,'heave') && ...
               isfield(node.motionCalib,'pitch') && ...
@@ -283,7 +285,7 @@ if RUN_TESTS.motionCalib
     nPass = nPass + passed3; nFail = nFail + ~passed3;
 
     logResult("Returns to IDLE after motion calib", passed1);
-    logResult("carriageCalibration.mat created (test/carriage_node/)", passed2);
+    logResult(sprintf("Calibration file exists (%s)", expectedCalFile), passed2);
     logResult("motionCalib has heave/pitch/roll fields", passed3);
 
     % ── Real-hardware visual confirmation ─────────────────────────────────
@@ -316,14 +318,9 @@ end
 if RUN_TESTS.sensorTest
     fprintf("\n=== T4: Sensor Test (streaming) ===\n");
 
-    % ── Real hardware: capture stream into a buffer via ctrlComm callback ──
-    if ~USE_MOCK
-        % containers.Map is a handle object — the closure captures it by
-        % reference, so storeStreamMsg can append to it from the callback.
-        streamStore = containers.Map('KeyType','int32','ValueType','any');
-        streamStore(0) = {};
-        ctrlComm.onMessageCallback = @(topic, msg) storeStreamMsg(streamStore, topic, msg);
-    end
+    % Snapshot log start so T4 parsing is deterministic and independent
+    % of callback assignment timing.
+    t4LogStart = numel(ctrlComm.messageLog) + 1;
 
     publish(ctrlComm, nodeCmd, struct('cmd','Test','params',struct('target','sensor')));
 
@@ -360,44 +357,44 @@ if RUN_TESTS.sensorTest
         while string(node.getState()) ~= "IDLE" && toc(tWait) < 5
             pause(0.05);
         end
-        ctrlComm.onMessageCallback = [];   % stop capturing
-
         passed1 = string(node.getState()) == "IDLE";
         nPass = nPass + passed1; nFail = nFail + ~passed1;
         logResult("Returns to IDLE after Reset", passed1);
 
         % ── Parse captured messages and plot ──────────────────────────────
-        rawMsgs = streamStore(0);
-        nMsgs   = numel(rawMsgs);
-        if nMsgs > 0
-            tVec = zeros(nMsgs,1);
-            Fx   = zeros(nMsgs,1);
-            Fy   = zeros(nMsgs,1);
-            Fz   = zeros(nMsgs,1);
-            valid = false(nMsgs,1);
-            for mi = 1:nMsgs
-                entry = rawMsgs{mi};
-                % entry{1}=topic, entry{2}=JSON string
-                if contains(entry{1}, '/data')
-                    try
-                        r = jsondecode(entry{2});
-                        if isfield(r,'Fx') && isfield(r,'Fz')
-                            tVec(mi) = mi;   % sample index as proxy for time
-                            Fx(mi)   = r.Fx;
-                            Fy(mi)   = r.Fy;
-                            Fz(mi)   = r.Fz;
-                            valid(mi) = true;
-                        end
-                    catch
-                    end
-                end
+        t4Entries = ctrlComm.messageLog(t4LogStart:end);
+        t4Times = NaT(0,1);
+        Fx = [];
+        Fy = [];
+        Fz = [];
+
+        for mi = 1:numel(t4Entries)
+            entry = t4Entries{mi};
+            if ~isfield(entry, 'topic') || ~strcmp(entry.topic, sprintf('%s/data', clientID))
+                continue;
             end
-            tVec = tVec(valid); Fx = Fx(valid); Fy = Fy(valid); Fz = Fz(valid);
+            try
+                r = jsondecode(entry.message);
+            catch
+                continue;
+            end
+            if ~isstruct(r) || ~isfield(r,'Fx') || ~isfield(r,'Fy') || ~isfield(r,'Fz')
+                continue;
+            end
+
+            t4Times(end+1,1) = entry.timestamp; %#ok<AGROW>
+            Fx(end+1,1) = r.Fx; %#ok<AGROW>
+            Fy(end+1,1) = r.Fy; %#ok<AGROW>
+            Fz(end+1,1) = r.Fz; %#ok<AGROW>
+        end
+
+        if ~isempty(t4Times)
+            tVec = seconds(t4Times - t4Times(1));
             if ~isempty(tVec)
                 figure('Name','T4: Live Force Stream');
                 plot(tVec, Fx, 'b', tVec, Fy, 'g', tVec, Fz, 'r', 'LineWidth', 1.2);
                 legend('Fx','Fy','Fz','Location','best');
-                xlabel('Sample index'); ylabel('Force (lb)');
+                xlabel('Time since T4 stream start (s)'); ylabel('Force (lb)');
                 title(sprintf('T4: Live sensor stream — %d readings captured', numel(tVec)));
                 grid on;
                 fprintf("[REAL] %d force readings plotted.\n", numel(tVec));
@@ -406,16 +403,9 @@ if RUN_TESTS.sensorTest
                 fprintf("[WARN] T4: no /data messages captured — check carriageNode/data subscription.\n");
             end
         else
-            fprintf("[WARN] T4: stream buffer empty.\n");
+            fprintf("[WARN] T4: no force /data packets found in ctrlComm.messageLog.\n");
         end
     end
-end
-
-% Helper used by T4 ctrlComm callback to store incoming stream messages.
-% containers.Map is a handle object so the closure captures it by reference.
-function storeStreamMsg(store, topic, msg)
-    existing    = store(0);
-    store(0)    = [existing; {{topic, msg}}];
 end
 
 % =========================================================================
