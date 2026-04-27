@@ -274,7 +274,7 @@ def main():
     cfg_file = sys.argv[1]
     profile  = sys.argv[2]
 
-    logger = setup_logging(os.path.join(REPO_ROOT, "logs"))
+    logger = setup_logging(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"))
     logger.info("ControlNode starting (profile: %s)", profile)
 
     # Load machine config and extract controlNode section

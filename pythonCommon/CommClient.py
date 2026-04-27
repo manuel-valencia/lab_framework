@@ -100,6 +100,7 @@ class CommClient:
         
         # Setup logging
         self.logger = logging.getLogger(f"CommClient.{self.client_id}")
+        self.logger.propagate = False  # prevent double-logging via root logger
         if self.verbose:
             self.logger.setLevel(logging.DEBUG)
             if not self.logger.handlers:
