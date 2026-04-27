@@ -158,7 +158,7 @@ while true; do
 
     if [ "$EXT" = "m" ]; then
       echo "[INFO] Launching MATLAB node (background): $FULL_PATH"
-      matlab -batch "${SCRIPT%.m}('$CONFIG_FILE', '$PROFILE')" &
+      matlab -batch "addpath('$PATH_TO_SCRIPT'); ${SCRIPT%.m}('$CONFIG_FILE', '$PROFILE')" &
       MATLAB_PID=$!
       BG_PIDS+=($MATLAB_PID)
       echo "[INFO] MATLAB node PID: $MATLAB_PID"
