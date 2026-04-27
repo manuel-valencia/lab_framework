@@ -388,8 +388,35 @@ classdef CarriageNodeManager < ExperimentManager
             obj.log("INFO", sprintf("handleRun: acquiring %.1f s at %d Hz...", ...
                 obj.duration, obj.sampleRate));
 
-            obj.rawData = read(obj.daqSession, seconds(obj.duration));
+            % Read in short chunks so Abort can be processed between reads.
+            % A single read(..., seconds(duration)) blocks command handling for
+            % the entire run and delays Abort until acquisition completes.
+            targetScans = max(1, round(obj.duration * obj.sampleRate));
+            chunkScans  = max(1, round(0.25 * obj.sampleRate));  % ~250 ms chunks
+            scansRead   = 0;
+            rawAccum    = [];
 
+            while scansRead < targetScans
+                if obj.abortRequested || obj.state ~= State.RUNNING
+                    obj.isCollecting = false;
+                    obj.rawData = [];
+                    obj.log("WARN", sprintf("handleRun: acquisition aborted at %d/%d scans.", scansRead, targetScans));
+                    return;
+                end
+
+                nToRead = min(chunkScans, targetScans - scansRead);
+                chunk = read(obj.daqSession, nToRead);
+
+                if isempty(rawAccum)
+                    rawAccum = chunk;
+                else
+                    rawAccum = [rawAccum; chunk]; %#ok<AGROW>
+                end
+
+                scansRead = height(rawAccum);
+            end
+
+            obj.rawData = rawAccum;
             obj.isCollecting = false;
             obj.log("INFO", "handleRun: acquisition complete.");
             obj.transition(State.POSTPROC);

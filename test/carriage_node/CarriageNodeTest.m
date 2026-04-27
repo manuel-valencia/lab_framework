@@ -540,7 +540,7 @@ if RUN_TESTS.abortRecovery
 
     % Start a long run so RUNNING state is reachable
     publish(ctrlComm, nodeCmd, struct('cmd','Run','params', ...
-        struct('name','AbortTest','duration',60,'frequency',1)));
+        struct('name','AbortTest','duration',20,'frequency',1)));
 
     timeout = tic;
     while string(node.getState()) ~= "CONFIGUREPENDING" && toc(timeout) < 2
@@ -558,6 +558,7 @@ if RUN_TESTS.abortRecovery
     % the time Abort is processed; Abort is valid from any state and always
     % transitions to ERROR.  On real hardware, Abort will interrupt the run.
     pause(0.05);
+    tAbortIssued = tic;
     publish(ctrlComm, nodeCmd, struct('cmd','Abort','params', ...
         struct('reason','T7 abort test')));
 
@@ -567,8 +568,12 @@ if RUN_TESTS.abortRecovery
     end
 
     passed2 = string(node.getState()) == "ERROR";
+    abortLatencySec = toc(tAbortIssued);
+    passed2b = passed2 && abortLatencySec <= 5;
     nPass = nPass + passed2; nFail = nFail + ~passed2;
+    nPass = nPass + passed2b; nFail = nFail + ~passed2b;
     logResult("Transitions to ERROR after Abort", passed2);
+    logResult(sprintf("Abort is applied within 5 s (actual %.2f s)", abortLatencySec), passed2b);
 
     publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
 
