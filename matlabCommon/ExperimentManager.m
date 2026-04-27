@@ -300,11 +300,21 @@ classdef (Abstract) ExperimentManager < handle
                 "msg", msg, ...
                 "timestamp", string(timestamp) ...
             );
-        
+
             try
                 jsonMsg = jsonencode(logMsg);
-                obj.comm.commPublish(obj.comm.getFullTopic("log"), jsonMsg);
                 obj.FSMLog{end+1} = jsonMsg;
+
+                % During shutdown, CommClient may already be disconnected.
+                % Keep local logging without warning in that case.
+                canPublish = false;
+                if ~isempty(obj.comm) && isprop(obj.comm, 'mqttClient') && ~isempty(obj.comm.mqttClient)
+                    canPublish = obj.comm.mqttClient.Connected;
+                end
+
+                if canPublish
+                    obj.comm.commPublish(obj.comm.getFullTopic("log"), jsonMsg);
+                end
             catch ME
                 warning("%s Log publish failed: %s %s", obj.FSMtag, msg, ME.message);
             end
