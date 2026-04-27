@@ -114,15 +114,16 @@ classdef (Abstract) ExperimentManager < handle
                 obj.settleCheck = struct();
             end
 
-            % Will load calibrationGains.mat table if available in same node folder
+            % Load calibrationGains.mat table if available in current working dir.
+            % Many nodes use node-specific calibration files instead, so absence
+            % of calibrationGains.mat is expected and should stay silent.
             try
                 localGainPath = fullfile(pwd, "calibrationGains.mat");
                 S = load(localGainPath);
                 obj.biasTable = S.biasTable;
                 fprintf("%s Loaded previous calibration gains from: %s \n", obj.FSMtag, localGainPath);
             catch
-                % Initialize empty bias table when no file found
-                fprintf("[WARN] %s No previous calibrationGains.mat found (this is expected for nodes that use other calibration files, e.g., probe_gains.mat).\n", obj.FSMtag);
+                % Initialize empty bias table when no file found.
                 obj.biasTable = struct();
             end
 

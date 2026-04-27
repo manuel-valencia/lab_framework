@@ -524,8 +524,27 @@ classdef CarriageNodeManager < ExperimentManager
         function stopHardware(obj)
             obj.isCollecting = false;
             obj.log("INFO", "stopHardware: halting DAQ acquisition.");
+
+            % Always stop/delete the sensor-stream timer first. During
+            % TESTINGSENSOR -> IDLE transition, this avoids deadlock where
+            % stop(daqSession) races an in-flight read() timer callback.
+            tList = timerfindall('Tag', 'CarriageSensorStreamTimer');
+            for k = 1:numel(tList)
+                try; stop(tList(k)); catch; end
+                try; delete(tList(k)); catch; end
+            end
+
+            % When exiting TESTINGSENSOR, return immediately after stopping
+            % timers so the FSM can complete the state change to IDLE.
+            % DAQ shutdown is then handled on IDLE entry (second stopHardware).
+            if obj.state == State.TESTINGSENSOR
+                return;
+            end
+
             try
-                stop(obj.daqSession);
+                if ~isempty(obj.daqSession)
+                    stop(obj.daqSession);
+                end
             catch ME
                 obj.log("WARN", sprintf("stopHardware DAQ stop error: %s", ME.message));
             end
