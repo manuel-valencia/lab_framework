@@ -130,20 +130,27 @@ while true; do
     echo "[INFO] Rollback complete. Launching previous code."
   fi
 
-  # --- Step 3b: Launch Mosquitto broker ---
+  # --- Step 3b: Launch Mosquitto broker (master computer only) ---
   # Mosquitto is launched from the versioned config in network/mosquitto.conf.
   # This manages both the standard MQTT listener (:1883) and the WebSocket
   # listener (:9001) needed by the web UI.
+  # The carriage computer connects to the master's broker and does not run
+  # its own — controlled by "launchMosquitto" in manifest.json.
   # NOTE: disable the system Mosquitto Windows service to avoid port conflicts:
   #   sc config mosquitto start= disabled && net stop mosquitto
-  if kill -0 "$MOSQUITTO_PID" 2>/dev/null; then
-    echo "[INFO] Mosquitto already running (PID $MOSQUITTO_PID), skipping relaunch."
+  LAUNCH_MOSQUITTO=$(python3 -c "import json; m=json.load(open('config/manifest.json')); print(str(m.get('$PROFILE',{}).get('launchMosquitto',False)).lower())")
+  if [ "$LAUNCH_MOSQUITTO" = "true" ]; then
+    if kill -0 "$MOSQUITTO_PID" 2>/dev/null; then
+      echo "[INFO] Mosquitto already running (PID $MOSQUITTO_PID), skipping relaunch."
+    else
+      echo "[INFO] Starting Mosquitto broker from network/mosquitto.conf..."
+      mosquitto -c network/mosquitto.conf &
+      MOSQUITTO_PID=$!
+      echo "[INFO] Mosquitto PID: $MOSQUITTO_PID"
+      sleep 2   # Give broker time to bind ports before nodes connect
+    fi
   else
-    echo "[INFO] Starting Mosquitto broker from network/mosquitto.conf..."
-    mosquitto -c network/mosquitto.conf &
-    MOSQUITTO_PID=$!
-    echo "[INFO] Mosquitto PID: $MOSQUITTO_PID"
-    sleep 2   # Give broker time to bind ports before nodes connect
+    echo "[INFO] launchMosquitto=false for profile '$PROFILE' — skipping broker launch."
   fi
 
   # --- Step 4: Launch nodes ---
