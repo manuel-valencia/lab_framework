@@ -502,7 +502,7 @@ class TestSettleCheck:
         mgr, mock_comm, _ = setup_multi_manager
 
         sc = {"enabled": True, "threshold": 0.005, "thresholdUnits": "m",
-              "holdDuration_s": 1.0, "timeout_s": 10}
+              "holdDuration_s": 1.0}
         final = self._run_multi(mgr, sc)
         assert final == "IDLE", f"Expected IDLE, got {final}"
 
@@ -519,66 +519,67 @@ class TestSettleCheck:
         mgr.experiment_spec = {"params": {}}
         sc = mgr._resolve_settle_check()
         assert sc["enabled"] is False
-        assert sc["timeout_s"] == 120.0
-        assert sc["onTimeout"] == "warn_and_continue"
+        assert sc["threshold"] == 0.0
+        assert sc["thresholdUnits"] == "m"
+        assert sc["holdDuration_s"] == 5.0
 
     def test_resolve_settle_check_merges_node_level(self, setup_multi_manager):
         """Node-level settle_check overrides defaults."""
         mgr, _, _ = setup_multi_manager
-        mgr.settle_check = {"enabled": True, "threshold": 0.01, "timeout_s": 30}
+        mgr.settle_check = {"enabled": True, "threshold": 0.01, "holdDuration_s": 3}
         mgr.experiment_spec = {"params": {}}
         sc = mgr._resolve_settle_check()
         assert sc["enabled"] is True
         assert sc["threshold"] == 0.01
-        assert sc["timeout_s"] == 30
+        assert sc["holdDuration_s"] == 3
         assert sc["thresholdUnits"] == "m"   # default preserved
 
     def test_resolve_settle_check_per_run_overrides_node_level(self, setup_multi_manager):
         """Per-run settleCheck overrides node-level settle_check."""
         mgr, _, _ = setup_multi_manager
-        mgr.settle_check = {"enabled": True, "timeout_s": 60}
+        mgr.settle_check = {"enabled": True, "holdDuration_s": 60}
         mgr.experiment_spec = {
-            "params": {"settleCheck": {"enabled": False, "timeout_s": 5}}
+            "params": {"settleCheck": {"enabled": False, "holdDuration_s": 5}}
         }
         sc = mgr._resolve_settle_check()
         assert sc["enabled"] is False   # per-run wins
-        assert sc["timeout_s"] == 5
+        assert sc["holdDuration_s"] == 5
 
     def test_await_ready_base_returns_true(self, setup_multi_manager):
         """Base await_ready hook always returns True."""
         mgr, _, _ = setup_multi_manager
-        sc = {"enabled": True, "threshold": 0.005, "holdDuration_s": 1.0, "timeout_s": 5}
+        sc = {"enabled": True, "threshold": 0.005, "holdDuration_s": 1.0}
         assert mgr.await_ready(sc) is True
 
-    def test_settle_check_timeout_warn_and_continue(self, setup_multi_manager):
-        """onTimeout=warn_and_continue: experiment continues even when await_ready returns False."""
+    def test_settle_check_enabled_await_false_still_ready_publish(self, setup_multi_manager):
+        """MATLAB parity: await_ready return value is ignored; INTER_RUN_READY is still published."""
         mgr, mock_comm, _ = setup_multi_manager
 
-        # Override await_ready to simulate a timeout
+        # Override await_ready to return False; flow should still continue.
         mgr.await_ready = lambda sc: False
 
         sc = {"enabled": True, "threshold": 0.005, "thresholdUnits": "m",
-              "holdDuration_s": 1.0, "timeout_s": 1, "onTimeout": "warn_and_continue"}
+              "holdDuration_s": 1.0}
         final = self._run_multi(mgr, sc)
-        assert final == "IDLE", f"Expected IDLE (warn_and_continue), got {final}"
+        assert final == "IDLE", f"Expected IDLE, got {final}"
 
-        # INTER_RUN_TIMEOUT must have been published
+        # INTER_RUN_READY must still have been published.
         published_calls = [str(c) for c in mock_comm.comm_publish.call_args_list]
-        timeout_count = sum(1 for p in published_calls if "INTER_RUN_TIMEOUT" in p)
-        assert timeout_count >= 1, \
-            f"Expected at least 1 INTER_RUN_TIMEOUT publish, found {timeout_count}"
+        ready_count = sum(1 for p in published_calls if "INTER_RUN_READY" in p)
+        assert ready_count >= 1, \
+            f"Expected at least 1 INTER_RUN_READY publish, found {ready_count}"
 
-    def test_settle_check_timeout_error(self, setup_multi_manager):
-        """onTimeout=error: FSM transitions to ERROR when await_ready returns False."""
+    def test_settle_check_no_timeout_error_branch(self, setup_multi_manager):
+        """MATLAB parity: no onTimeout branch in base manager."""
         mgr, mock_comm, _ = setup_multi_manager
 
-        # Override await_ready to simulate a timeout
+        # Even if await_ready returns False, manager does not branch to ERROR.
         mgr.await_ready = lambda sc: False
 
         sc = {"enabled": True, "threshold": 0.005, "thresholdUnits": "m",
-              "holdDuration_s": 1.0, "timeout_s": 1, "onTimeout": "error"}
+              "holdDuration_s": 1.0}
         final = self._run_multi(mgr, sc)
-        assert final == "ERROR", f"Expected ERROR (onTimeout=error), got {final}"
+        assert final == "IDLE", f"Expected IDLE, got {final}"
 
     def test_publish_inter_run_status_ready(self, setup_multi_manager):
         """_publish_inter_run_status publishes correct INTER_RUN_READY payload."""

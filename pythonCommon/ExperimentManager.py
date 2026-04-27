@@ -110,6 +110,7 @@ class ExperimentManager(ABC):
         self.experiment_spec = None
         self.current_experiment_index = 0
         self.cmd = None
+        self.abort_requested = False
         
         # Logging setup
         self.fsm_tag = f"[FSM:{self.comm.client_id}]"
@@ -135,10 +136,9 @@ class ExperimentManager(ABC):
                     self.bias_table = pickle.load(f)
                 print(f"{self.fsm_tag} Loaded previous calibration gains from: {local_gain_path}")
             else:
-                print(f"[WARN] {self.fsm_tag} No previous calibrationGains.pkl found.")
                 self.bias_table = {}
-        except Exception as e:
-            print(f"[WARN] {self.fsm_tag} Failed to load calibration gains: {e}")
+        except Exception:
+            # Absence/parse failure is expected for many nodes.
             self.bias_table = {}
         
         # Check MQTT connection
@@ -204,6 +204,17 @@ class ExperimentManager(ABC):
                 self.transition(State.CONFIGUREVALIDATE)
                 
             elif cmd_name == "TestValid":
+                if self.state != State.CONFIGUREPENDING:
+                    print(f"[WARN] {self.fsm_tag} Invalid TestValid from state: {self.state.name}")
+                    self.log("WARN", f"Invalid TestValid from state: {self.state.name}")
+                    self.transition(State.ERROR)
+                    return
+                if not self.experiment_spec or not self.experiment_spec.get("params"):
+                    self.log("ERROR", "TestValid received but no pending Test parameters are cached.")
+                    self.transition(State.ERROR)
+                    return
+                # Reuse the original Test(actuator) parameters.
+                self.cmd = self.experiment_spec
                 self.transition(State.TESTINGACTUATOR)
                 
             elif cmd_name == "RunValid":
@@ -212,6 +223,7 @@ class ExperimentManager(ABC):
                     self.log("WARN", f"Invalid RunValid from state: {self.state}")
                     self.transition(State.ERROR)
                     return
+                self.abort_requested = False
                 self.transition(State.RUNNING)
                 
             elif cmd_name == "Reset":
@@ -234,7 +246,7 @@ class ExperimentManager(ABC):
                 }
                 self.comm.comm_publish(self.comm.get_full_topic("status"), json.dumps(update_msg))
                 try:
-                    self.shutdown_hardware()
+                    self.shutdown()
                 except Exception:
                     pass
                 sys.exit(42)
@@ -261,6 +273,7 @@ class ExperimentManager(ABC):
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         }
         self.comm.comm_publish(self.comm.get_full_topic("status"), json.dumps(abort_msg))
+        self.abort_requested = True
         try:
             self.stop_hardware()
         except Exception:
@@ -312,8 +325,12 @@ class ExperimentManager(ABC):
         
         try:
             json_msg = json.dumps(log_msg)
-            self.comm.comm_publish(self.comm.get_full_topic("log"), json_msg)
             self.fsm_log.append(json_msg)
+
+            # During shutdown, CommClient may already be disconnected.
+            # Keep local logging without warning in that case.
+            if bool(getattr(self.comm, "connected", False)):
+                self.comm.comm_publish(self.comm.get_full_topic("log"), json_msg)
         except Exception as e:
             print(f"[WARN] {self.fsm_tag} Log publish failed: {msg} {e}")
     
@@ -677,18 +694,8 @@ class ExperimentManager(ABC):
                 if sc.get("enabled", False):
                     self.log("INFO", f"[POSTPROC] settleCheck enabled — awaiting ready signal before "
                                      f"sub-experiment {self.current_experiment_index + 2}.")
-                    ready = self.await_ready(sc)
-                    if ready:
-                        self._publish_inter_run_status("INTER_RUN_READY", self.current_experiment_index + 2)
-                    else:
-                        self._publish_inter_run_status("INTER_RUN_TIMEOUT", self.current_experiment_index + 2)
-                        on_timeout = sc.get("onTimeout", "warn_and_continue")
-                        if on_timeout == "error":
-                            self.log("ERROR", "settleCheck timed out and onTimeout=error — aborting.")
-                            self.transition(State.ERROR)
-                            return
-                        else:
-                            self.log("WARN", "settleCheck timed out — continuing (onTimeout=warn_and_continue).")
+                    self.await_ready(sc)
+                    self._publish_inter_run_status("INTER_RUN_READY", self.current_experiment_index + 2)
 
                 self.current_experiment_index += 1
                 self.setup_current_experiment()
@@ -780,6 +787,10 @@ class ExperimentManager(ABC):
     
     def _enter_error(self) -> None:
         """Failsafe entry into ERROR state"""
+        try:
+            self.stop_hardware()
+        except Exception:
+            pass
         print(f"{self.fsm_tag} [ERROR] System faulted.")
 
     # ------------------------------------------------------------------
@@ -823,8 +834,6 @@ class ExperimentManager(ABC):
             "threshold":      0.0,
             "thresholdUnits": "m",
             "holdDuration_s": 5.0,
-            "timeout_s":      120.0,
-            "onTimeout":      "warn_and_continue",
         }
         sc = {**defaults}
 

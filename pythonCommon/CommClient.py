@@ -245,17 +245,30 @@ class CommClient:
             return
             
         with self._connection_lock:
-            if not getattr(self, '_connected', False):
-                return
-            
             try:
                 # Stop heartbeat timer
                 self._stop_heartbeat_timer()
                 
-                # Disconnect MQTT client
+                # Best-effort unsubscribe before disconnect.
                 if self.mqtt_client:
-                    self.mqtt_client.loop_stop()
-                    self.mqtt_client.disconnect()
+                    try:
+                        if self._connected:
+                            for topic in list(self.subscriptions):
+                                try:
+                                    self.mqtt_client.unsubscribe(topic)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
+                    try:
+                        self.mqtt_client.loop_stop()
+                    except Exception:
+                        pass
+                    try:
+                        self.mqtt_client.disconnect()
+                    except Exception:
+                        pass
                     
                 self._cleanup_connection()
                 
