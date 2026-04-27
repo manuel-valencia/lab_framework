@@ -328,7 +328,7 @@ if RUN_TESTS.sensorTest
     publish(ctrlComm, nodeCmd, struct('cmd','Test','params',struct('target','sensor')));
 
     % Mock: synchronous 25-sample burst, self-transitions to IDLE.
-    % Real: timer-driven stream — wait 3 s then send Reset.
+    % Real: wait until TESTINGSENSOR is entered, then observe exactly 3 s.
     if USE_MOCK
         tWait = tic;
         while string(node.getState()) ~= "IDLE" && toc(tWait) < 5
@@ -338,8 +338,23 @@ if RUN_TESTS.sensorTest
         nPass = nPass + passed1; nFail = nFail + ~passed1;
         logResult("Mock streams 25 readings and returns to IDLE", passed1);
     else
-        fprintf("[REAL] Streaming live force data for 3 seconds...\n");
-        pause(3);
+        % Match WaveMaker test behavior: ensure streaming state is active
+        % before starting the 3-second observation timer.
+        tEnter = tic;
+        while string(node.getState()) ~= "TESTINGSENSOR" && toc(tEnter) < 3
+            pause(0.05);
+        end
+        enteredTest = string(node.getState()) == "TESTINGSENSOR";
+        nPass = nPass + enteredTest; nFail = nFail + ~enteredTest;
+        logResult("Enters TESTINGSENSOR before 3-second observation", enteredTest);
+
+        if ~enteredTest
+            fprintf("[WARN] T4: node did not enter TESTINGSENSOR in time; sending Reset and continuing.\n");
+        else
+            fprintf("[REAL] TESTINGSENSOR active. Streaming live force data for 3 seconds...\n");
+            pause(3);
+        end
+
         publish(ctrlComm, nodeCmd, struct('cmd','Reset'));
         tWait = tic;
         while string(node.getState()) ~= "IDLE" && toc(tWait) < 5

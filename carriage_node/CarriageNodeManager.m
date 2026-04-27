@@ -74,30 +74,49 @@ classdef CarriageNodeManager < ExperimentManager
             obj.motionCalibBuffer = struct('heave', [], 'pitch', [], 'roll', []);
             obj.motionCalib       = struct();
 
-            % Calibration file and log folder — anchored to this class file's folder
-            % so the mock subclass can override them to point to test/carriage_node/ instead.
+            % Calibration file and log folder.
+            % calibrationFile follows cfg.hardware.calibrationFile when provided,
+            % otherwise defaults to this class folder so the mock subclass can
+            % override it to test/carriage_node/.
             nodeDir = fileparts(mfilename('fullpath'));
-            obj.calibrationFile = fullfile(nodeDir, 'carriageCalibration.mat');
+            if isfield(cfg, 'hardware') && isfield(cfg.hardware, 'calibrationFile') && ~isempty(cfg.hardware.calibrationFile)
+                obj.calibrationFile = cfg.hardware.calibrationFile;
+            else
+                obj.calibrationFile = fullfile(nodeDir, 'carriageCalibration.mat');
+            end
             obj.logDir          = fullfile(nodeDir, 'carriageNodeLogs');
 
-            % Load saved calibration (force bias + motion sensors) from single file
-            if isfile(obj.calibrationFile)
-                loaded = load(obj.calibrationFile);
+            % Load saved calibration (force bias + motion sensors) from single file.
+            % Legacy fallback: if carriageCalibration.mat is missing but
+            % calibrationGains.mat exists in the same folder, try that file.
+            calibPath = obj.calibrationFile;
+            legacyCalibPath = fullfile(fileparts(obj.calibrationFile), 'calibrationGains.mat');
+            if ~isfile(calibPath) && isfile(legacyCalibPath)
+                calibPath = legacyCalibPath;
+                obj.log("WARN", sprintf("Primary calibration file not found, falling back to legacy file: %s", legacyCalibPath));
+            end
+
+            if isfile(calibPath)
+                loaded = load(calibPath);
                 if isfield(loaded, 'biasVoltages')
                     obj.biasVoltages = loaded.biasVoltages;
                     obj.log("INFO", sprintf("Force bias loaded: [%s]", ...
                         strjoin(arrayfun(@(v) sprintf('%.5f', v), obj.biasVoltages, 'UniformOutput', false), ', ')));
+                elseif isfield(loaded, 'gains') && isnumeric(loaded.gains) && numel(loaded.gains) >= 6
+                    % Best-effort compatibility for older calibrationGains.mat formats.
+                    obj.biasVoltages = loaded.gains(1:6);
+                    obj.log("WARN", "Loaded legacy 'gains' field as biasVoltages(1:6). Please migrate to carriageCalibration.mat format.");
                 else
-                    obj.log("WARN", "carriageCalibration.mat found but contains no biasVoltages.");
+                    obj.log("WARN", sprintf("Calibration file found but contains no biasVoltages-compatible field: %s", calibPath));
                 end
                 if isfield(loaded, 'motionCalib')
                     obj.motionCalib = loaded.motionCalib;
                     obj.log("INFO", "Motion calibration loaded.");
                 else
-                    obj.log("WARN", "carriageCalibration.mat found but contains no motionCalib. Run motion_sensors calibration.");
+                    obj.log("WARN", sprintf("Calibration file contains no motionCalib: %s. Run motion_sensors calibration.", calibPath));
                 end
             else
-                obj.log("WARN", "No carriageCalibration.mat found. Run force_bias and motion_sensors calibration before first experiment.");
+                obj.log("WARN", sprintf("No calibration file found at %s. Run force_bias and motion_sensors calibration before first experiment.", obj.calibrationFile));
             end
 
             obj.log("INFO", "CarriageNodeManager initialized.");
@@ -199,7 +218,7 @@ classdef CarriageNodeManager < ExperimentManager
             % "force_bias"
             %   Reads 1 second of data with the test body already attached.
             %   Takes the mean voltage of each of the 6 SG channels as the bias.
-            %   Saves biasVoltages (1x6) to calibrationGains.mat.
+            %   Saves biasVoltages (1x6) to carriageCalibration.mat.
             %   This matches the biasData block in the original .m code.
             %
             % "motion_sensors"
@@ -207,7 +226,7 @@ classdef CarriageNodeManager < ExperimentManager
             %   Each command with {channel, knownValue_mm} reads one 1-second
             %   voltage sample and stores the (V, knownValue_mm) pair.
             %   Final command with {finished:true} fits spline lookup tables
-            %   and saves motionCalibration.mat.
+            %   and saves carriageCalibration.mat.
             %   channel must be "heave", "pitch", or "roll".
 
             try
