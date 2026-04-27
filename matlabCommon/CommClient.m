@@ -265,6 +265,11 @@ classdef CommClient < handle
             payloadStruct.clientID = obj.clientID;
             payloadStruct.timestamp = datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS');
             payloadStruct.state = 'READY';
+            try
+                payloadStruct.ip = char(java.net.InetAddress.getLocalHost().getHostAddress());
+            catch
+                payloadStruct.ip = 'unknown';
+            end
 
             jsonPayload = jsonencode(payloadStruct);
             topic = obj.getFullTopic('status');

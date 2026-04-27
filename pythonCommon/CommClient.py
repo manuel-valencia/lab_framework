@@ -369,10 +369,17 @@ class CommClient:
                 self.logger.warning("Skipped heartbeat: MQTT client is not connected")
             return
         
+        import socket
+        try:
+            local_ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            local_ip = 'unknown'
+
         payload = {
             'clientID': self.client_id,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
-            'state': 'READY'
+            'state': 'READY',
+            'ip': local_ip
         }
         
         topic = self.get_full_topic('status')
