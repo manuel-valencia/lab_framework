@@ -281,8 +281,9 @@ classdef CarriageNodeManager < ExperimentManager
         function handleTest(obj, cmd) %#ok<INUSD>
             % handleTest
             % Collects a fresh force bias then starts a MATLAB timer that fires
-            % at the DAQ sample rate. Each tick reads one scan from the DAQ,
-            % decouples with the RunTimeMatrix, and publishes to carriageNode/data.
+            % periodically. The DAQ runs in continuous mode; each timer tick
+            % reads a small buffered block, decouples with the RunTimeMatrix,
+            % and publishes to carriageNode/data.
             % handleTest returns immediately so the MQTT thread stays free to
             % receive the Reset command. The timer stops itself once the FSM
             % state leaves TESTINGSENSOR (set by the incoming Reset).
@@ -301,10 +302,21 @@ classdef CarriageNodeManager < ExperimentManager
             blockSize = 5;
             period    = blockSize / obj.sampleRate;   % 0.1 s at 50 Hz
 
+            % Run DAQ continuously so read(blockSize) pulls from a live buffer
+            % instead of blocking for new scans every timer tick.
+            try
+                if ~obj.daqSession.Running
+                    start(obj.daqSession, "continuous");
+                end
+            catch ME
+                obj.log("WARN", sprintf("handleTest: failed to start continuous DAQ acquisition: %s", ME.message));
+            end
+
             t = timer( ...
                 'ExecutionMode', 'fixedRate', ...
                 'Period',        period, ...
                 'BusyMode',      'drop', ...
+                'Tag',           'CarriageSensorStreamTimer', ...
                 'TimerFcn',      @(~,~) obj.streamOneScan(bias, blockSize), ...
                 'StopFcn',       @(src,~) delete(src));
             start(t);
@@ -315,10 +327,12 @@ classdef CarriageNodeManager < ExperimentManager
             % Reads blockSize DAQ scans, decouples each, publishes mean as one
             % reading. Stops the timer when the FSM leaves TESTINGSENSOR.
             if obj.state ~= State.TESTINGSENSOR
-                tList = timerfind('TimerFcn', []);
+                tList = timerfindall('Tag', 'CarriageSensorStreamTimer');
                 for k = 1:numel(tList)
-                    stop(tList(k));
+                    try; stop(tList(k)); catch; end
+                    try; delete(tList(k)); catch; end
                 end
+                try; stop(obj.daqSession); catch; end
                 return;
             end
             try

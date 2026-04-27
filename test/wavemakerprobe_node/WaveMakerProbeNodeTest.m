@@ -301,7 +301,7 @@ if RUN_TESTS.sensorTest
     % Directly configure active probes without a Run → CONFIGUREPENDING cycle.
     node.setActiveProbes(activeProbes);
     fprintf("  Active probes set to [%s] via setActiveProbes.\n", ...
-        strjoin(arrayfun(@(x) num2str(x), activeProbes, 'UniformOutput', false), ', '));
+        strjoin(arrayfun(@(x) num2str(x), activeProbes, 'UniformOutput', false), ', '));    
 
     % Set live heights for the mock, then send Test(sensor)
     if USE_MOCK
