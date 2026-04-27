@@ -43,6 +43,7 @@ def setup_logging(log_dir: str) -> logging.Logger:
 
     logger = logging.getLogger("control_node")
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False  # prevent duplicate lines via root logger
 
     fmt = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
 
@@ -79,6 +80,25 @@ class ControlNode:
             with open(registry_path) as f:
                 self.node_registry = json.load(f)
             self.logger.info("Loaded existing node registry (%d nodes)", len(self.node_registry))
+
+        # Seed node capabilities from manifest (source of truth)
+        manifest_path = os.path.join(REPO_ROOT, "config", "manifest.json")
+        if os.path.isfile(manifest_path):
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            for profile_data in manifest.values():
+                for node_def in profile_data.get("nodes", []):
+                    nid = node_def.get("nodeId")
+                    if not nid:
+                        continue
+                    if nid not in self.node_registry:
+                        self.node_registry[nid] = {"status": "offline"}
+                    entry = self.node_registry[nid]
+                    # Always refresh from manifest — it is the canonical source
+                    if "hasSensor" in node_def:
+                        entry["hasSensor"] = node_def["hasSensor"]
+                    if "hasActuator" in node_def:
+                        entry["hasActuator"] = node_def["hasActuator"]
 
         # Initialise CommClient and RestClient
         self.comm = CommClient(cfg)

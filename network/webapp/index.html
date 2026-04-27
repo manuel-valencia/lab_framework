@@ -8,6 +8,7 @@
   <!-- Dependencies from CDN — no build step required -->
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 
   <style>
     /* ── Reset & base ─────────────────────────────────────────── */
@@ -105,6 +106,10 @@
     .flash { font-size:.75rem; color:#86efac; min-height:1.2em; }
     .flash.err { color:#fca5a5; }
     .section-title { font-size:.75rem; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:16px 0 8px; }
+
+    /* ── Control tab layout ───────────────────────────────────── */
+    .control-grid { display:grid; grid-template-columns:240px 1fr; gap:12px; margin-bottom:12px; }
+    @media(max-width:768px){ .control-grid{ grid-template-columns:1fr; } }
   </style>
 </head>
 
@@ -158,15 +163,17 @@
 
     <!-- ════════════════ CONTROL TAB ════════════════════════════ -->
     <div class="tab" :class="{active: activeTab==='Control'}">
-      <div class="grid-2">
 
-        <!-- Left: node selector + commands -->
+      <!-- Top row: node commands (left) + live data plot (right) -->
+      <div class="control-grid">
+
+        <!-- Left: node selector + capability-based commands -->
         <div class="card">
-          <div class="card-title">Node commands</div>
+          <div class="card-title">Node control</div>
 
           <div class="form-row">
             <label>Target node</label>
-            <select x-model="cmdTarget">
+            <select x-model="cmdTarget" @change="initPlot()">
               <option value="">— select a node —</option>
               <template x-for="[id] in Object.entries(nodes)" :key="id">
                 <option :value="id" x-text="id"></option>
@@ -174,32 +181,52 @@
             </select>
           </div>
 
-          <div class="section-title">FSM commands</div>
-          <div class="cmd-list">
-            <template x-for="cmd in fsmCommands" :key="cmd">
-              <button class="btn btn-secondary" :disabled="!cmdTarget"
-                      @click="sendCmd(cmdTarget, {cmd})"
-                      x-text="cmd"></button>
-            </template>
+          <div x-show="!cmdTarget" style="color:var(--muted);font-size:.82rem;margin-top:8px">
+            Select a node to see available commands.
           </div>
 
-          <div class="section-title">Run experiment</div>
-          <div class="form-row">
-            <label>Run ID / tag</label>
-            <input type="text" x-model="runTag" placeholder="e.g. run_001" />
+          <div x-show="cmdTarget">
+            <div class="section-title">Commands</div>
+            <div class="cmd-list">
+              <template x-for="cmd in getNodeCommands()" :key="cmd">
+                <button class="btn"
+                        :class="cmdButtonClass(cmd)"
+                        :disabled="!cmdTarget"
+                        @click="sendCmd(cmdTarget, {cmd})"
+                        x-text="cmd"></button>
+              </template>
+            </div>
           </div>
-          <div class="form-row">
-            <label>Parameters (JSON)</label>
-            <textarea rows="4" x-model="runParams" placeholder='{"speed":0.5,"duration":30}'></textarea>
-          </div>
-          <button class="btn btn-primary" :disabled="!cmdTarget"
-                  @click="sendCmd(cmdTarget, {cmd:'Run', tag:runTag, params: safeParseJSON(runParams)})">
-            Send Run
-          </button>
+
           <div class="flash mt" :class="{err: cmdFlash.startsWith('Error')}" x-text="cmdFlash"></div>
         </div>
 
-        <!-- Right: broadcast -->
+        <!-- Right: live data plot -->
+        <div class="card">
+          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span x-text="cmdTarget ? cmdTarget + ' · live data' : 'Live data'"></span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span style="font-size:.7rem;color:var(--muted)"
+                    x-text="plotRate > 0 ? plotRate + ' msg/s' : ''"></span>
+              <button class="btn btn-secondary" style="padding:2px 8px;font-size:.72rem"
+                      @click="clearPlot()">Clear</button>
+            </div>
+          </div>
+          <div style="position:relative;height:280px">
+            <canvas id="live-chart"></canvas>
+            <div x-show="plotChannels.length === 0"
+                 style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+                        color:var(--muted);font-size:.82rem;text-align:center;pointer-events:none">
+              No data yet — select a node and press TestSensor.
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /control-grid -->
+
+      <!-- Bottom row: broadcast + raw MQTT -->
+      <div class="grid-2">
+
         <div class="card">
           <div class="card-title">Broadcast to all nodes</div>
           <div class="cmd-list">
@@ -210,17 +237,22 @@
             </template>
           </div>
           <div class="flash mt" :class="{err: broadcastFlash.startsWith('Error')}" x-text="broadcastFlash"></div>
+        </div>
 
-          <div class="section-title" style="margin-top:20px">Raw MQTT publish</div>
-          <div class="form-row">
-            <label>Topic</label>
-            <input type="text" x-model="rawTopic" placeholder="nodeId/cmd" />
+        <div class="card">
+          <div class="card-title">Raw MQTT publish</div>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+            <div style="flex:1;min-width:90px">
+              <label>Topic</label>
+              <input type="text" x-model="rawTopic" placeholder="nodeId/cmd" />
+            </div>
+            <div style="flex:2;min-width:160px">
+              <label>Payload (JSON)</label>
+              <input type="text" x-model="rawPayload"
+                     placeholder='{"cmd":"Calibrate","params":{"target":"force_bias"}}' />
+            </div>
+            <button class="btn btn-secondary" style="flex-shrink:0" @click="publishRaw()">Publish</button>
           </div>
-          <div class="form-row">
-            <label>Payload (JSON)</label>
-            <textarea rows="3" x-model="rawPayload" placeholder='{"cmd":"Reset"}'></textarea>
-          </div>
-          <button class="btn btn-secondary" @click="publishRaw()">Publish</button>
           <div class="flash mt" :class="{err: rawFlash.startsWith('Error')}" x-text="rawFlash"></div>
         </div>
 
@@ -312,16 +344,18 @@
 
       // ── Control tab ────────────────────────────────────────────
       cmdTarget: '',
-      runTag: '',
-      runParams: '',
       cmdFlash: '',
       broadcastFlash: '',
       rawTopic: '',
       rawPayload: '',
       rawFlash: '',
 
-      fsmCommands: ['Reset','Calibrate','TestSensor','ConfigureValidate','ConfigurePending',
-                    'TestActuator','Run','Stop','PostProc','Shutdown','Update'],
+      // ── Plot state ─────────────────────────────────────────────
+      plotChart:    null,
+      plotChannels: [],
+      plotMaxPts:   200,
+      plotRate:     0,
+      _plotCount:   0,
 
       // ── Experiment tab ─────────────────────────────────────────
       templates: [],
@@ -350,6 +384,8 @@
         this.pollTemplates();
         // Periodic REST fallback every 10 s
         setInterval(() => this.pollNodes(), 10_000);
+        // Track live data message rate
+        setInterval(() => { this.plotRate = this._plotCount; this._plotCount = 0; }, 1000);
       },
 
       // ══════════════════════════════════════════════════════════
@@ -367,6 +403,7 @@
           this.mqttConnected = true;
           this.mqttClient.subscribe('+/status');
           this.mqttClient.subscribe('+/log');
+          this.mqttClient.subscribe('+/data');
           this.addLog('INFO', '[MQTT] Connected to broker');
         });
 
@@ -413,6 +450,10 @@
           const level = msg.level || 'INFO';
           const text  = `[${nodeId}] ${msg.message || raw}`;
           this.addLog(level, text);
+        }
+
+        if (channel === 'data') {
+          this.addDataPoint(nodeId, msg);
         }
       },
 
@@ -514,6 +555,101 @@
             if (el) el.scrollTop = el.scrollHeight;
           });
         }
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Node commands (capability-driven)
+      // ══════════════════════════════════════════════════════════
+      getNodeCommands() {
+        const n = this.cmdTarget ? this.nodes[this.cmdTarget] : null;
+        const cmds = [];
+        if (n && n.hasSensor)   cmds.push('Calibrate', 'TestSensor');
+        if (n && n.hasActuator) cmds.push('TestActuator');
+        cmds.push('Reset', 'Update');
+        return cmds;
+      },
+
+      cmdButtonClass(cmd) {
+        if (cmd === 'Reset')  return 'btn-danger';
+        if (cmd === 'Update') return 'btn-secondary';
+        return 'btn-primary';
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Live data plot
+      // ══════════════════════════════════════════════════════════
+      initPlot() {
+        this.$nextTick(() => {
+          if (this.plotChart) { this.plotChart.destroy(); this.plotChart = null; }
+          this.plotChannels = [];
+          const canvas = document.getElementById('live-chart');
+          if (!canvas) return;
+          this.plotChart = new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: {
+              animation: false,
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12 } }
+              },
+              scales: {
+                x: { display: false },
+                y: {
+                  ticks: { color: '#94a3b8', font: { size: 10 } },
+                  grid:  { color: '#334155' }
+                }
+              }
+            }
+          });
+        });
+      },
+
+      clearPlot() {
+        if (!this.plotChart) return;
+        this.plotChart.data.labels = [];
+        this.plotChart.data.datasets.forEach(d => { d.data = []; });
+        this.plotChannels = [];
+        this.plotChart.update('none');
+      },
+
+      addDataPoint(nodeId, msg) {
+        if (nodeId !== this.cmdTarget) return;
+        if (!this.plotChart) this.initPlot();
+        const SKIP   = new Set(['type', 'units', 'timestamp', 'clientID', 'state']);
+        const COLORS = ['#38bdf8','#86efac','#fcd34d','#fb923c','#d8b4fe','#fca5a5','#5eead4'];
+        const fields = Object.entries(msg).filter(([k, v]) => !SKIP.has(k) && typeof v === 'number');
+        if (!fields.length) return;
+        this._plotCount++;
+        // Register any new channels as datasets
+        fields.forEach(([name]) => {
+          if (!this.plotChannels.includes(name)) {
+            this.plotChannels.push(name);
+            if (this.plotChart) {
+              this.plotChart.data.datasets.push({
+                label:           name,
+                data:            [],
+                borderColor:     COLORS[(this.plotChannels.length - 1) % COLORS.length],
+                backgroundColor: 'transparent',
+                borderWidth:     1.5,
+                pointRadius:     0,
+                tension:         0.2,
+              });
+            }
+          }
+        });
+        if (!this.plotChart) return;
+        // Append rolling label + values
+        this.plotChart.data.labels.push('');
+        if (this.plotChart.data.labels.length > this.plotMaxPts)
+          this.plotChart.data.labels.shift();
+        this.plotChart.data.datasets.forEach(ds => {
+          const v = msg[ds.label];
+          ds.data.push(v !== undefined ? v : null);
+          if (ds.data.length > this.plotMaxPts) ds.data.shift();
+        });
+        this.plotChart.update('none');
       },
 
       // ══════════════════════════════════════════════════════════
