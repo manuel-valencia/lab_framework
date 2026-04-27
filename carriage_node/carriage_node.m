@@ -67,10 +67,21 @@ function carriage_node(cfgFile, profile)
     %% 4. Wire MQTT message callback
     comm.onMessageCallback = @(topic, msg) mgr.onMessageCallback(topic, msg);
 
-    %% 5. Graceful shutdown on exit
+    %% 5. Publish IP address once so the web UI can display it
+    try
+        localIP = char(java.net.InetAddress.getLocalHost().getHostAddress());
+    catch
+        localIP = 'unknown';
+    end
+    ipStatus = struct('state', 'IDLE', 'ip', localIP, ...
+        'timestamp', char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSSS')));
+    comm.commPublish(comm.getFullTopic('status'), jsonencode(ipStatus));
+    fprintf("[INFO] CarriageNode IP: %s\n", localIP);
+
+    %% 6. Graceful shutdown on exit
     finalizer = onCleanup(@() shutdownNode(comm, mgr));
 
-    %% 6. Main event loop — blocks here; all work is done in MQTT callbacks
+    %% 7. Main event loop — blocks here; all work is done in MQTT callbacks
     fprintf("[INFO] CarriageNode online. Waiting for commands...\n");
     while ~isempty(comm.mqttClient) && comm.mqttClient.Connected
         pause(0.001);
