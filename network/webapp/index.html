@@ -108,7 +108,7 @@
     .section-title { font-size:.75rem; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:16px 0 8px; }
 
     /* ── Control tab layout ───────────────────────────────────── */
-    .control-grid { display:grid; grid-template-columns:240px 1fr; gap:12px; margin-bottom:12px; }
+    .control-grid { display:grid; grid-template-columns:minmax(200px,1fr) 3fr; gap:12px; margin-bottom:12px; }
     @media(max-width:768px){ .control-grid{ grid-template-columns:1fr; } }
   </style>
 </head>
@@ -188,12 +188,12 @@
           <div x-show="cmdTarget">
             <div class="section-title">Commands</div>
             <div class="cmd-list">
-              <template x-for="cmd in getNodeCommands()" :key="cmd">
+              <template x-for="item in getNodeCommands()" :key="item.label">
                 <button class="btn"
-                        :class="cmdButtonClass(cmd)"
+                        :class="cmdButtonClass(item.label)"
                         :disabled="!cmdTarget"
-                        @click="sendCmd(cmdTarget, {cmd})"
-                        x-text="cmd"></button>
+                        @click="sendCmd(cmdTarget, item.payload)"
+                        x-text="item.label"></button>
               </template>
             </div>
           </div>
@@ -562,16 +562,22 @@
       // ══════════════════════════════════════════════════════════
       getNodeCommands() {
         const n = this.cmdTarget ? this.nodes[this.cmdTarget] : null;
-        const cmds = [];
-        if (n && n.hasSensor)   cmds.push('Calibrate', 'TestSensor');
-        if (n && n.hasActuator) cmds.push('TestActuator');
-        cmds.push('Reset', 'Update');
-        return cmds;
+        const items = [];
+        if (n && n.hasSensor) {
+          items.push({ label: 'Calibrate',   payload: { cmd: 'Calibrate', params: { target: 'force_bias' } } });
+          items.push({ label: 'TestSensor',  payload: { cmd: 'Test',      params: { target: 'sensor'     } } });
+        }
+        if (n && n.hasActuator) {
+          items.push({ label: 'TestActuator', payload: { cmd: 'Test', params: { target: 'actuator' } } });
+        }
+        items.push({ label: 'Reset',  payload: { cmd: 'Reset'  } });
+        items.push({ label: 'Update', payload: { cmd: 'Update' } });
+        return items;
       },
 
-      cmdButtonClass(cmd) {
-        if (cmd === 'Reset')  return 'btn-danger';
-        if (cmd === 'Update') return 'btn-secondary';
+      cmdButtonClass(label) {
+        if (label === 'Reset')  return 'btn-danger';
+        if (label === 'Update') return 'btn-secondary';
         return 'btn-primary';
       },
 
