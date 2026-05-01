@@ -43,6 +43,8 @@ classdef (Abstract) ExperimentManager < handle
         cmd                         % Command string for current operation
         logDir                      % Folder path for commLog / fsmLog output
         abortRequested logical = false % Set true when Abort command is received
+        _fsmFlushIdx  double = 0    % Number of FSMLog entries already flushed
+        _commFlushIdx double = 0    % Number of comm.messageLog entries already flushed
 
         % settleCheck — inter-run readiness configuration.
         % Controls whether awaitReady() runs between sub-experiments in
@@ -315,8 +317,51 @@ classdef (Abstract) ExperimentManager < handle
                 if canPublish
                     obj.comm.commPublish(obj.comm.getFullTopic("log"), jsonMsg);
                 end
+                % Flush new entry to disk immediately
+                obj.flushLogs();
             catch ME
                 warning("%s Log publish failed: %s %s", obj.FSMtag, msg, ME.message);
+            end
+        end
+
+        function flushLogs(obj)
+            % flushLogs - Append any unflushed FSMLog and commLog entries to disk.
+            % Uses append mode so partial writes survive crashes. Called after
+            % every log() entry and at the start of shutdown().
+            try
+                if ~exist(obj.logDir, 'dir'); mkdir(obj.logDir); end
+
+                % --- FSMLog (node state machine messages) ---
+                newFSM = obj.FSMLog(obj._fsmFlushIdx+1:end);
+                if ~isempty(newFSM)
+                    fsmPath = fullfile(obj.logDir, sprintf('%s_fsmLog.jsonl', obj.cfg.clientID));
+                    fid = fopen(fsmPath, 'a');
+                    if fid ~= -1
+                        for i = 1:numel(newFSM)
+                            fprintf(fid, '%s\n', newFSM{i});
+                        end
+                        fclose(fid);
+                        obj._fsmFlushIdx = numel(obj.FSMLog);
+                    end
+                end
+
+                % --- CommClient message log ---
+                if isprop(obj.comm, 'messageLog') && ~isempty(obj.comm.messageLog)
+                    newComm = obj.comm.messageLog(obj._commFlushIdx+1:end);
+                    if ~isempty(newComm)
+                        commPath = fullfile(obj.logDir, sprintf('%s_commLog.jsonl', obj.cfg.clientID));
+                        fid = fopen(commPath, 'a');
+                        if fid ~= -1
+                            for i = 1:numel(newComm)
+                                fprintf(fid, '%s\n', jsonencode(newComm{i}));
+                            end
+                            fclose(fid);
+                            obj._commFlushIdx = numel(obj.comm.messageLog);
+                        end
+                    end
+                end
+            catch
+                % Silent — flushLogs must never throw inside log()
             end
         end
 
@@ -360,7 +405,10 @@ classdef (Abstract) ExperimentManager < handle
             
             % Step 1: Call user-defined hardware shutdown
             obj.shutdownHardware();
-        
+
+            % Flush any remaining log entries before disconnect
+            obj.flushLogs();
+
             % Step 2: Create per-node log folder
             if ~exist(obj.logDir, 'dir')
                 mkdir(obj.logDir);

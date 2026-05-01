@@ -23,7 +23,7 @@ function carriage_node(cfgFile, profile)
     repoRoot = fileparts(mfilename('fullpath'));
     addpath(genpath(fullfile(repoRoot, '..', 'matlabCommon')));
 
-    logDir = fullfile(repoRoot, '..', 'logs');
+    logDir = fullfile(repoRoot, 'logs');
     if ~isfolder(logDir); mkdir(logDir); end
 
     ts = char(datetime("now", 'Format', 'yyyyMMdd-HHmmss'));

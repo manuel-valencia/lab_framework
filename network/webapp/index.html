@@ -239,6 +239,9 @@
                       x-show="plotUnits" x-text="plotUnits"></span>
                 <button class="btn btn-secondary" style="padding:2px 8px;font-size:.72rem"
                         @click="clearPlot()">Clear</button>
+                <button class="btn" style="padding:2px 8px;font-size:.72rem"
+                        :class="plotDebug ? 'btn-primary' : 'btn-secondary'"
+                        @click="plotDebug = !plotDebug">Debug</button>
               </div>
             </div>
             <div x-show="plotChannels.length > 0"
@@ -248,6 +251,32 @@
                         :class="plotVisibleChannels[ch] !== false ? 'btn-primary' : 'btn-secondary'"
                         @click="toggleChannel(ch)"
                         x-text="ch"></button>
+              </template>
+            </div>
+            <!-- Debug overlay -->
+            <div x-show="plotDebug"
+                 style="font-size:.7rem;color:var(--muted);background:var(--bg);border:1px solid var(--border);
+                        border-radius:4px;padding:6px 10px;margin-bottom:8px;line-height:2">
+              <div>
+                <span x-text="'Chart: ' + (plotChartReady ? '✓' : '✗ NOT CREATED')"></span>
+                &nbsp;|&nbsp;
+                <span x-text="'Datasets: ' + plotChannels.length"></span>
+                &nbsp;|&nbsp;
+                <span x-text="'Points: ' + plotDataCount"></span>
+                &nbsp;|&nbsp;
+                <span x-text="'Total msgs: ' + plotMsgTotal"></span>
+                &nbsp;|&nbsp;
+                <span x-text="'initPending: ' + _initPending"></span>
+                &nbsp;|&nbsp;
+                <span style="color:#fcd34d" x-text="'cmdTarget: \'' + cmdTarget + '\'""></span>
+              </div>
+              <template x-for="ch in plotChannels" :key="ch">
+                <div>
+                  <span style="color:var(--text)" x-text="ch + ': '"></span>
+                  <span x-text="plotLastValues[ch] !== undefined ? Number(plotLastValues[ch]).toExponential(4) : 'no data'"></span>
+                  <span x-text="' | visible: ' + (plotVisibleChannels[ch] !== false)"></span>
+                  <span x-text="' | hidden: ' + !plotVisibleChannels[ch]"></span>
+                </div>
               </template>
             </div>
             <div style="position:relative;height:280px">
@@ -395,6 +424,7 @@
 
   <script>
   function app() {
+    let _chart = null;   // kept outside Alpine reactive state — prevents proxy interference
     return {
       // ── Tab state ──────────────────────────────────────────────
       tabs: ['System', 'Control', 'Experiment', 'Log'],
@@ -435,10 +465,14 @@
       },
 
       // ── Plot state ─────────────────────────────────────────────
-      plotChart:           null,
+      plotChartReady:      false,
+      plotDataCount:       0,
       plotChannels:        [],
       plotVisibleChannels: {},
       plotUnits:           '',
+      plotLastValues:      {},
+      plotDebug:           false,
+      plotMsgTotal:        0,
       plotMaxPts:          200,
       plotRate:            0,
       _plotCount:          0,
@@ -687,7 +721,10 @@
       onNodeChange() {
         this.plotChannels        = [];
         this.plotVisibleChannels = {};
+        this.plotLastValues      = {};
+        this.plotDataCount       = 0;
         this.plotUnits           = '';
+        this.plotChartReady      = false;
         this._initPending        = false;
         this.initPlot();
       },
@@ -695,13 +732,14 @@
       initPlot() {
         if (this._initPending) return;   // already scheduled — avoid re-entrancy
         this._initPending = true;
+        this.plotChartReady = false;
         this.$nextTick(() => {
           this._initPending = false;
-          if (this.plotChart) { this.plotChart.destroy(); this.plotChart = null; }
+          if (_chart) { _chart.destroy(); _chart = null; }
           const canvas = document.getElementById('live-chart');
           if (!canvas) return;
           const COLORS = ['#38bdf8','#86efac','#fcd34d','#fb923c','#d8b4fe','#fca5a5','#5eead4'];
-          this.plotChart = new Chart(canvas.getContext('2d'), {
+          _chart = new Chart(canvas.getContext('2d'), {
             type: 'line',
             data: { labels: [], datasets: [] },
             options: {
@@ -724,7 +762,7 @@
           });
           // Restore any channels that accumulated in plotChannels while init was pending
           this.plotChannels.forEach((name, idx) => {
-            this.plotChart.data.datasets.push({
+            _chart.data.datasets.push({
               label:           name,
               data:            [],
               hidden:          !this.plotVisibleChannels[name],
@@ -736,36 +774,40 @@
             });
           });
           if (this.plotUnits) {
-            this.plotChart.options.scales.y.title.text    = this.plotUnits;
-            this.plotChart.options.scales.y.title.display = true;
+            _chart.options.scales.y.title.text    = this.plotUnits;
+            _chart.options.scales.y.title.display = true;
           }
-          if (this.plotChannels.length) this.plotChart.update('none');
+          this.plotChartReady = true;
+          if (this.plotChannels.length) _chart.update('none');
         });
       },
 
       clearPlot() {
-        if (!this.plotChart) return;
-        this.plotChart.data.labels   = [];
-        this.plotChart.data.datasets = [];   // remove datasets entirely to avoid duplicates on next run
+        if (!_chart) return;
+        _chart.data.labels   = [];
+        _chart.data.datasets = [];
         this.plotChannels            = [];
         this.plotVisibleChannels     = {};
+        this.plotLastValues          = {};
+        this.plotDataCount           = 0;
+        this.plotMsgTotal            = 0;
         this.plotUnits               = '';
-        this.plotChart.options.scales.y.title.display = false;
-        this.plotChart.options.scales.y.title.text    = '';
-        this.plotChart.update('none');
+        _chart.options.scales.y.title.display = false;
+        _chart.options.scales.y.title.text    = '';
+        _chart.update('none');
       },
 
       toggleChannel(ch) {
         this.plotVisibleChannels[ch] = !this.plotVisibleChannels[ch];
         this.plotVisibleChannels = { ...this.plotVisibleChannels };
-        if (!this.plotChart) return;
-        const ds = this.plotChart.data.datasets.find(d => d.label === ch);
-        if (ds) { ds.hidden = !this.plotVisibleChannels[ch]; this.plotChart.update('none'); }
+        if (!_chart) return;
+        const ds = _chart.data.datasets.find(d => d.label === ch);
+        if (ds) { ds.hidden = !this.plotVisibleChannels[ch]; _chart.update('none'); }
       },
 
       addDataPoint(nodeId, msg) {
         if (nodeId !== this.cmdTarget) return;
-        if (!this.plotChart) this.initPlot();
+        if (!_chart) { this.initPlot(); }
         const SKIP   = new Set(['type', 'units', 'timestamp', 'clientID', 'state']);
         const COLORS = ['#38bdf8','#86efac','#fcd34d','#fb923c','#d8b4fe','#fca5a5','#5eead4'];
         const fields = Object.entries(msg).filter(([k, v]) => !SKIP.has(k) && typeof v === 'number');
@@ -774,9 +816,9 @@
         // Update Y-axis units label if present
         if (msg.units && msg.units !== this.plotUnits) {
           this.plotUnits = msg.units;
-          if (this.plotChart) {
-            this.plotChart.options.scales.y.title.text    = msg.units;
-            this.plotChart.options.scales.y.title.display = true;
+          if (_chart) {
+            _chart.options.scales.y.title.text    = msg.units;
+            _chart.options.scales.y.title.display = true;
           }
         }
         // Register any new channels as datasets
@@ -785,8 +827,8 @@
             this.plotChannels.push(name);
             if (this.plotVisibleChannels[name] === undefined)
               this.plotVisibleChannels[name] = true;
-            if (this.plotChart) {
-              this.plotChart.data.datasets.push({
+            if (_chart) {
+              _chart.data.datasets.push({
                 label:           name,
                 data:            [],
                 hidden:          !this.plotVisibleChannels[name],
@@ -799,18 +841,22 @@
             }
           }
         });
-        if (!this.plotChart) return;
+        if (!_chart) return;
         // Append rolling label + values
-        this.plotChart.data.labels.push('');
-        if (this.plotChart.data.labels.length > this.plotMaxPts)
-          this.plotChart.data.labels.shift();
-        this.plotChart.data.datasets.forEach(ds => {
+        _chart.data.labels.push('');
+        if (_chart.data.labels.length > this.plotMaxPts)
+          _chart.data.labels.shift();
+        _chart.data.datasets.forEach(ds => {
           ds.hidden = !this.plotVisibleChannels[ds.label];
           const v = msg[ds.label];
           ds.data.push(v !== undefined ? v : null);
           if (ds.data.length > this.plotMaxPts) ds.data.shift();
         });
-        this.plotChart.update('none');
+        // Track last raw value per channel for debug display
+        fields.forEach(([name, val]) => { this.plotLastValues[name] = val; });
+        this.plotDataCount = _chart.data.labels.length;
+        this.plotMsgTotal++;
+        _chart.update('none');
       },
 
       // ══════════════════════════════════════════════════════════
