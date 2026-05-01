@@ -329,7 +329,7 @@ classdef CarriageNodeManager < ExperimentManager
             % ScansAvailableFcnCount samples are buffered.
             % No read() call in the callback — eliminates re-entrancy.
             obj.daqSession.ScansAvailableFcnCount = blockSize;
-            obj.daqSession.ScansAvailableFcn = @(~, evt) obj.onDataAvailableTest(evt, bias);
+            obj.daqSession.ScansAvailableFcn = @(src, ~) obj.onDataAvailableTest(src, bias, blockSize);
             obj.streamListener = true;   % flag: listener is active
 
             try
@@ -340,17 +340,18 @@ classdef CarriageNodeManager < ExperimentManager
             end
         end
 
-        function onDataAvailableTest(obj, evt, bias)
-            % onDataAvailableTest — DataAvailable callback for Test streaming.
-            % Data is pushed by the hardware; no read() call needed.
-            % Self-stops when the FSM leaves TESTINGSENSOR.
+        function onDataAvailableTest(obj, src, bias, blockSize)
+            % onDataAvailableTest — ScansAvailableFcn callback for Test streaming.
+            % ScansAvailableFcn signals that blockSize scans are ready; call
+            % read(src, blockSize) to pull them. Self-stops when FSM leaves TESTINGSENSOR.
             if obj.state ~= State.TESTINGSENSOR
                 obj.teardownStreamListener();
-                try; stop(obj.daqSession); catch; end
+                try; stop(src); catch; end
                 return;
             end
             try
-                rawArr       = mean(evt.Data, 1);   % mean block → 1x10  (nScans × nCh matrix)
+                rawData      = read(src, blockSize);          % timetable: blockSize × nCh
+                rawArr       = mean(table2array(rawData), 1); % mean block → 1x10
                 SG_corrected = rawArr(1:6) - bias;
                 FT           = obj.runTimeMatrix * SG_corrected';
                 reading = struct( ...
