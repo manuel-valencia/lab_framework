@@ -483,7 +483,10 @@ classdef CarriageNodeManager < ExperimentManager
             pitchRaw = raw(:, 9);
             rollRaw  = raw(:, 10);
 
-            if ~isempty(fieldnames(obj.motionCalib)) && isfield(obj.motionCalib, 'heave')
+            if ~isempty(fieldnames(obj.motionCalib)) && ...
+                    isfield(obj.motionCalib, 'heave') && ...
+                    isfield(obj.motionCalib, 'pitch') && ...
+                    isfield(obj.motionCalib, 'roll')
                 Heave_mm  = interp1(obj.motionCalib.heave.V, obj.motionCalib.heave.D, heaveRaw, 'spline', 'extrap');
                 Pitch_deg = interp1(obj.motionCalib.pitch.V, obj.motionCalib.pitch.D, pitchRaw, 'spline', 'extrap');
                 Roll_deg  = interp1(obj.motionCalib.roll.V,  obj.motionCalib.roll.D,  rollRaw,  'spline', 'extrap');

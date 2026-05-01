@@ -120,6 +120,11 @@
     .calib-warn  { color:#fcd34d; }
     .calib-ok    { color:#86efac; }
     .calib-error { color:#fca5a5; }
+
+    /* ── Experiment tab ───────────────────────────────────────── */
+    .exp-desc { font-size:.82rem; color:var(--muted); line-height:1.6; margin-bottom:14px; padding:10px; background:var(--bg); border-radius:6px; border:1px solid var(--border); }
+    .exp-field-hint { font-size:.7rem; color:var(--muted); margin-top:3px; }
+    .exp-state-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
   </style>
 </head>
 
@@ -355,6 +360,7 @@
     </div>
 
     <!-- ════════════════ EXPERIMENT TAB ═════════════════════════ -->
+<!-- ════════════════ EXPERIMENT TAB ═════════════════════════ -->
     <div class="tab" :class="{active: activeTab==='Experiment'}">
       <div class="grid-2">
 
@@ -373,26 +379,73 @@
           </template>
         </div>
 
-        <!-- JSON editor -->
+        <!-- Structured experiment form -->
         <div class="card">
-          <div class="card-title">Loaded template</div>
-          <div class="form-row">
-            <label>Template name</label>
-            <input type="text" x-model="loadedName" placeholder="my_experiment.json" />
+          <div class="card-title" x-text="expNodeType ? 'Experiment: '+expNodeType : 'Experiment setup'"></div>
+
+          <!-- Description -->
+          <div class="exp-desc" x-show="expDescription" x-text="expDescription"></div>
+          <div class="exp-desc" x-show="!expDescription" style="color:var(--muted)">
+            Load a template from the left panel to begin.
           </div>
-          <div class="form-row">
-            <label>JSON content</label>
-            <textarea id="json-editor" x-model="loadedJSON" spellcheck="false"
-                      placeholder="Load a template or type JSON here…"></textarea>
+
+          <!-- Node selector + live state badge -->
+          <div class="exp-state-row">
+            <div style="flex:1">
+              <label>Target node</label>
+              <select x-model="expNodeTarget">
+                <option value="">&mdash; select node &mdash;</option>
+                <template x-for="[id, node] in Object.entries(nodes).filter(([,n]) => n.online)" :key="id">
+                  <option :value="id" x-text="id"></option>
+                </template>
+              </select>
+            </div>
+            <div x-show="expNodeTarget" style="margin-top:16px">
+              <span class="node-state" :class="'s-'+(nodes[expNodeTarget]?.state||'UNKNOWN')"
+                    x-text="nodes[expNodeTarget]?.state||'—'"></span>
+            </div>
           </div>
-          <div style="display:flex;gap:8px">
+
+          <!-- Dynamic form fields -->
+          <div x-show="expNodeType">
+            <template x-for="f in (EXP_FORMS[expNodeType]?.fields || [])" :key="f.key">
+              <div class="form-row">
+                <label>
+                  <span x-text="f.label"></span>
+                  <span x-show="f.required" style="color:#fca5a5"> *</span>
+                </label>
+                <input :type="f.type" x-model="expFields[f.key]"
+                       :placeholder="f.hint || ''" />
+                <div class="exp-field-hint" x-show="f.hint" x-text="f.hint"></div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Action buttons -->
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
             <button class="btn btn-primary"
-                    @click="sendCmd(cmdTarget, {cmd:'Configure', config: safeParseJSON(loadedJSON)})"
-                    :disabled="!cmdTarget">
-              Configure node
+                    :disabled="!expNodeTarget || !expNodeType"
+                    @click="expConfigure()">
+              Configure
+            </button>
+            <button class="btn btn-primary"
+                    :disabled="(nodes[expNodeTarget]?.state) !== 'CONFIGUREPENDING'"
+                    @click="sendCmd(expNodeTarget, {cmd:'RunValid'}); expDataAvailable=false">
+              &#9654; Run
+            </button>
+            <button class="btn btn-danger"
+                    :disabled="!['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes[expNodeTarget]?.state)"
+                    @click="sendCmd(expNodeTarget, {cmd:'Abort'})">
+              &#9632; Abort
+            </button>
+            <button class="btn btn-secondary"
+                    :disabled="!expDataAvailable"
+                    @click="expDownload()">
+              &#8595; Download data
             </button>
           </div>
-          <div class="flash mt" :class="{err: tplFlash.startsWith('Error')}" x-text="tplFlash"></div>
+
+          <div class="flash mt" :class="{err: expFlash.startsWith('Error')}" x-text="expFlash"></div>
         </div>
 
       </div>
@@ -423,6 +476,16 @@
   </main><!-- /main -->
 
   <script>
+  const EXP_FORMS = {
+    carriageNode: {
+      fields: [
+        { key: 'name',       label: 'Run name',            type: 'text',   required: false, hint: 'e.g. baseline_run_001' },
+        { key: 'duration',   label: 'Duration (s)',         type: 'number', required: true,  hint: 'Acquisition time in seconds' },
+        { key: 'sampleRate', label: 'Sample rate (Hz)',     type: 'number', required: false, hint: 'Default: 50 Hz (leave blank to use hardware default)' },
+      ]
+    }
+  };
+
   function app() {
     let _chart = null;   // kept outside Alpine reactive state — prevents proxy interference
     return {
@@ -483,6 +546,12 @@
       loadedName: '',
       loadedJSON: '',
       tplFlash: '',
+      expNodeTarget:    '',
+      expNodeType:      '',
+      expDescription:   '',
+      expFields:        {},
+      expFlash:         '',
+      expDataAvailable: false,
 
       // ── Log tab ────────────────────────────────────────────────
       logLines: [],       // [{level, text}]
@@ -570,6 +639,12 @@
           };
           // Trigger Alpine reactivity
           this.nodes = { ...this.nodes };
+          // Set expDataAvailable when experiment target node reaches DONE
+          if (nodeId === this.expNodeTarget && msg.state === 'DONE') {
+            this.expDataAvailable = true;
+            this.expFlash = 'Run complete — data ready to download.';
+            setTimeout(() => { this.expFlash = ''; }, 6000);
+          }
         }
 
         if (channel === 'log') {
@@ -619,9 +694,65 @@
           this.loadedName = name;
           this.loadedJSON = JSON.stringify(data, null, 2);
           this.tplFlash   = `Loaded ${name}`;
-          this.activeTab  = 'Experiment';
+          // Populate structured experiment form if template has _nodeType
+          if (data._nodeType) {
+            this.expNodeType    = data._nodeType;
+            this.expDescription = data._description || '';
+            const fields = EXP_FORMS[data._nodeType]?.fields || [];
+            const seeded = {};
+            fields.forEach(f => {
+              seeded[f.key] = data[f.key] !== undefined ? String(data[f.key]) : '';
+            });
+            this.expFields        = seeded;
+            this.expDataAvailable = false;
+          }
+          this.activeTab = 'Experiment';
         } catch (e) {
           this.tplFlash = 'Error: ' + e.message;
+        }
+      },
+
+      expConfigure() {
+        if (!this.expNodeTarget || !this.expNodeType) return;
+        const fields = EXP_FORMS[this.expNodeType]?.fields || [];
+        const params = {};
+        for (const f of fields) {
+          const val = this.expFields[f.key];
+          if (val === '' || val === undefined) continue;
+          params[f.key] = f.type === 'number' ? Number(val) : val;
+        }
+        this.expDataAvailable = false;
+        this.sendCmd(this.expNodeTarget, { cmd: 'Run', params });
+        this.expFlash = `Configure sent to ${this.expNodeTarget} — awaiting CONFIGUREPENDING…`;
+        setTimeout(() => { this.expFlash = ''; }, 5000);
+      },
+
+      async expDownload() {
+        try {
+          const url = `http://${location.hostname}:5000/data/${this.expNodeTarget}?latest=true`;
+          const res  = await fetch(url);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          let content, filename, mime;
+          if (data.format === 'csv') {
+            content  = data.csv;
+            filename = `${this.expNodeTarget}_latest.csv`;
+            mime     = 'text/csv';
+          } else {
+            content  = JSON.stringify(data.data, null, 2);
+            filename = `${this.expNodeTarget}_latest.json`;
+            mime     = 'application/json';
+          }
+          const blob = new Blob([content], { type: mime });
+          const a    = document.createElement('a');
+          a.href     = URL.createObjectURL(blob);
+          a.download = filename;
+          a.click();
+          URL.revokeObjectURL(a.href);
+          this.expFlash = `Downloaded ${filename}`;
+          setTimeout(() => { this.expFlash = ''; }, 3000);
+        } catch (e) {
+          this.expFlash = 'Error: ' + e.message;
         }
       },
 

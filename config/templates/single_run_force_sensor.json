@@ -1,0 +1,7 @@
+{
+  "_description": "Single tow-tank run using the carriage force sensor (ATI Gamma IP68). Acquires all 6 force/moment channels plus sync and 3 motion channels for the specified duration. A fresh force bias is collected automatically before acquisition begins.",
+  "_nodeType": "carriageNode",
+  "name": "force_run_001",
+  "duration": 30,
+  "sampleRate": 50
+}
