@@ -60,6 +60,7 @@ classdef CarriageNodeManager < ExperimentManager
 
         % Hardware
         daqSession          % NI-DAQ session object
+        streamListener      % DataAvailable listener handle for Test streaming
     end
 
     methods
@@ -299,25 +300,18 @@ classdef CarriageNodeManager < ExperimentManager
 
         function handleTest(obj, cmd) %#ok<INUSD>
             % handleTest
-            % Collects a fresh force bias then starts a MATLAB timer that fires
-            % periodically. The DAQ runs in continuous mode; each timer tick
-            % reads a small buffered block, decouples with the RunTimeMatrix,
-            % and publishes to carriageNode/data.
-            % handleTest returns immediately so the MQTT thread stays free to
-            % receive the Reset command. The timer stops itself once the FSM
-            % state leaves TESTINGSENSOR (set by the incoming Reset).
+            % Collects a fresh force bias then attaches a DataAvailable listener
+            % to the DAQ session. The hardware pushes data to onDataAvailableTest
+            % every time NotifyWhenDataAvailableExceeds samples arrive — no
+            % blocking read() in the hot path, no timer re-entrancy.
+            % handleTest returns immediately; streaming stops when the FSM
+            % leaves TESTINGSENSOR (Reset command) via stopHardware.
 
             obj.log("INFO", "handleTest: collecting fresh force bias before streaming...");
 
-            % Tear down any running stream timer and stop the DAQ before the
-            % blocking read() in collectForceBias. Without this, a stale timer
-            % tick can fire via drawnow() during the read(), causing a second
-            % concurrent read() on the same NI session → Timeout error.
-            tList = timerfindall('Tag', 'CarriageSensorStreamTimer');
-            for k = 1:numel(tList)
-                try; stop(tList(k)); catch; end
-                try; delete(tList(k)); catch; end
-            end
+            % Delete any existing stream listener and stop DAQ before the
+            % blocking read() in collectForceBias.
+            obj.teardownStreamListener();
             try
                 if obj.daqSession.Running
                     stop(obj.daqSession);
@@ -326,58 +320,39 @@ classdef CarriageNodeManager < ExperimentManager
             pause(0.1);   % let NI hardware fully flush and go idle
 
             obj.collectForceBias();
-            obj.log("INFO", "handleTest: starting sensor stream timer. Send Reset to stop.");
+            obj.log("INFO", "handleTest: starting sensor stream. Send Reset to stop.");
 
-            bias = obj.biasVoltages;
+            bias      = obj.biasVoltages;
+            blockSize = 5;   % fire every 5 scans → 10 Hz at 50 Hz sample rate
 
-            % Read 5 scans per tick at 50 Hz → timer period = 100 ms.
-            % Reading 1 scan at a time would make the DAQ read itself take ~20 ms
-            % (one sample period), leaving no margin before the next 20 ms tick.
-            % Reading a small block gives the timer ~80 ms of headroom and keeps
-            % the effective publish rate at 10 Hz — sufficient for live diagnostics.
-            blockSize = 5;
-            period    = blockSize / obj.sampleRate;   % 0.1 s at 50 Hz
+            % Use DataAvailable event: hardware pushes evt.Data when
+            % NotifyWhenDataAvailableExceeds samples are buffered.
+            % No read() call in the callback — eliminates re-entrancy.
+            obj.daqSession.NotifyWhenDataAvailableExceeds = blockSize;
+            obj.streamListener = addlistener(obj.daqSession, 'DataAvailable', ...
+                @(~, evt) obj.onDataAvailableTest(evt, bias));
 
-            % Run DAQ continuously so read(blockSize) pulls from a live buffer
-            % instead of blocking for new scans every timer tick.
             try
-                if ~obj.daqSession.Running
-                    start(obj.daqSession, "continuous");
-                end
+                start(obj.daqSession, "continuous");
             catch ME
-                obj.log("WARN", sprintf("handleTest: failed to start continuous DAQ acquisition: %s", ME.message));
+                obj.log("WARN", sprintf("handleTest: failed to start DAQ acquisition: %s", ME.message));
+                obj.teardownStreamListener();
             end
-
-            t = timer( ...
-                'ExecutionMode', 'fixedRate', ...
-                'Period',        period, ...
-                'BusyMode',      'drop', ...
-                'Tag',           'CarriageSensorStreamTimer', ...
-                'TimerFcn',      @(~,~) obj.streamOneScan(bias, blockSize), ...
-                'StopFcn',       @(src,~) delete(src));
-            start(t);
         end
 
-        function streamOneScan(obj, bias, blockSize)
-            % streamOneScan  — timer callback for handleTest.
-            % Reads blockSize DAQ scans, decouples each, publishes mean as one
-            % reading. Stops the timer when the FSM leaves TESTINGSENSOR.
+        function onDataAvailableTest(obj, evt, bias)
+            % onDataAvailableTest — DataAvailable callback for Test streaming.
+            % Data is pushed by the hardware; no read() call needed.
+            % Self-stops when the FSM leaves TESTINGSENSOR.
             if obj.state ~= State.TESTINGSENSOR
-                tList = timerfindall('Tag', 'CarriageSensorStreamTimer');
-                for k = 1:numel(tList)
-                    try; stop(tList(k)); catch; end
-                    try; delete(tList(k)); catch; end
-                end
+                obj.teardownStreamListener();
                 try; stop(obj.daqSession); catch; end
                 return;
             end
             try
-                % Guard: skip read if DAQ was stopped between timer fire and execution
-                if ~obj.daqSession.Running; return; end
-                rawRead = read(obj.daqSession, blockSize);
-                rawArr  = mean(table2array(rawRead), 1);   % mean over block → 1x10
+                rawArr       = mean(evt.Data{:,:}, 1);   % mean block → 1x10
                 SG_corrected = rawArr(1:6) - bias;
-                FT = obj.runTimeMatrix * SG_corrected';
+                FT           = obj.runTimeMatrix * SG_corrected';
                 reading = struct( ...
                     'type',      'force', ...
                     'Fx',        FT(1), ...
@@ -390,7 +365,7 @@ classdef CarriageNodeManager < ExperimentManager
                     'timestamp', string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS')));
                 obj.comm.commPublish(obj.comm.getFullTopic("data"), jsonencode(reading));
             catch ME
-                obj.log("WARN", sprintf("streamOneScan error: %s", ME.message));
+                obj.log("WARN", sprintf("onDataAvailableTest error: %s", ME.message));
             end
         end
 
@@ -576,21 +551,9 @@ classdef CarriageNodeManager < ExperimentManager
             obj.isCollecting = false;
             obj.log("INFO", "stopHardware: halting DAQ acquisition.");
 
-            % Always stop/delete the sensor-stream timer first. During
-            % TESTINGSENSOR -> IDLE transition, this avoids deadlock where
-            % stop(daqSession) races an in-flight read() timer callback.
-            tList = timerfindall('Tag', 'CarriageSensorStreamTimer');
-            for k = 1:numel(tList)
-                try; stop(tList(k)); catch; end
-                try; delete(tList(k)); catch; end
-            end
-
-            % When exiting TESTINGSENSOR, return immediately after stopping
-            % timers so the FSM can complete the state change to IDLE.
-            % DAQ shutdown is then handled on IDLE entry (second stopHardware).
-            if obj.state == State.TESTINGSENSOR
-                return;
-            end
+            % Delete the DataAvailable listener first so no further callbacks
+            % fire after this point.
+            obj.teardownStreamListener();
 
             try
                 if ~isempty(obj.daqSession)
@@ -600,10 +563,8 @@ classdef CarriageNodeManager < ExperimentManager
                 obj.log("WARN", sprintf("stopHardware DAQ stop error: %s", ME.message));
             end
 
-            % If recovering from an ERROR state, the NI hardware buffers may be
-            % corrupt from a re-entrant read() timeout. A plain stop() is not
-            % sufficient — delete and recreate the entire session to fully reset
-            % the driver state so the next Test/Run can read cleanly.
+            % If recovering from ERROR, NI hardware buffers may be corrupt.
+            % Delete and recreate the entire session to fully reset driver state.
             if obj.prevState == State.ERROR
                 try
                     delete(obj.daqSession);
@@ -622,12 +583,27 @@ classdef CarriageNodeManager < ExperimentManager
             obj.experimentData = [];
             obj.rawData        = [];
             obj.log("INFO", "shutdownHardware: releasing DAQ resources.");
+            obj.teardownStreamListener();
             try
                 stop(obj.daqSession);
                 delete(obj.daqSession);
             catch ME
                 obj.log("WARN", sprintf("shutdownHardware DAQ release error: %s", ME.message));
             end
+        end
+
+    end
+
+    methods (Access = private)
+
+        function teardownStreamListener(obj)
+            % teardownStreamListener — safely delete the DataAvailable listener.
+            % Must be called before stop()/delete() on the DAQ session to avoid
+            % 'Invalid or deleted object' warnings from orphaned callbacks.
+            if ~isempty(obj.streamListener) && isvalid(obj.streamListener)
+                delete(obj.streamListener);
+            end
+            obj.streamListener = [];
         end
 
     end
