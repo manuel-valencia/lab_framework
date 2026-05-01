@@ -43,8 +43,8 @@ classdef (Abstract) ExperimentManager < handle
         cmd                         % Command string for current operation
         logDir                      % Folder path for commLog / fsmLog output
         abortRequested logical = false % Set true when Abort command is received
-        _fsmFlushIdx  double = 0    % Number of FSMLog entries already flushed
-        _commFlushIdx double = 0    % Number of comm.messageLog entries already flushed
+        fsmFlushIdx  double = 0    % Number of FSMLog entries already flushed
+        commFlushIdx double = 0    % Number of comm.messageLog entries already flushed
 
         % settleCheck — inter-run readiness configuration.
         % Controls whether awaitReady() runs between sub-experiments in
@@ -332,7 +332,7 @@ classdef (Abstract) ExperimentManager < handle
                 if ~exist(obj.logDir, 'dir'); mkdir(obj.logDir); end
 
                 % --- FSMLog (node state machine messages) ---
-                newFSM = obj.FSMLog(obj._fsmFlushIdx+1:end);
+                newFSM = obj.FSMLog(obj.fsmFlushIdx+1:end);
                 if ~isempty(newFSM)
                     fsmPath = fullfile(obj.logDir, sprintf('%s_fsmLog.jsonl', obj.cfg.clientID));
                     fid = fopen(fsmPath, 'a');
@@ -341,13 +341,13 @@ classdef (Abstract) ExperimentManager < handle
                             fprintf(fid, '%s\n', newFSM{i});
                         end
                         fclose(fid);
-                        obj._fsmFlushIdx = numel(obj.FSMLog);
+                        obj.fsmFlushIdx = numel(obj.FSMLog);
                     end
                 end
 
                 % --- CommClient message log ---
                 if isprop(obj.comm, 'messageLog') && ~isempty(obj.comm.messageLog)
-                    newComm = obj.comm.messageLog(obj._commFlushIdx+1:end);
+                    newComm = obj.comm.messageLog(obj.commFlushIdx+1:end);
                     if ~isempty(newComm)
                         commPath = fullfile(obj.logDir, sprintf('%s_commLog.jsonl', obj.cfg.clientID));
                         fid = fopen(commPath, 'a');
@@ -356,7 +356,7 @@ classdef (Abstract) ExperimentManager < handle
                                 fprintf(fid, '%s\n', jsonencode(newComm{i}));
                             end
                             fclose(fid);
-                            obj._commFlushIdx = numel(obj.comm.messageLog);
+                            obj.commFlushIdx = numel(obj.comm.messageLog);
                         end
                     end
                 end
