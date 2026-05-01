@@ -1,0 +1,90 @@
+{
+  "carriageNode": {
+    "label": "Carriage Node — Motion Sensor Calibration",
+    "phases": [
+      {
+        "id": "motion_sensors",
+        "label": "Heave / Pitch / Roll",
+        "intro": [
+          "This wizard calibrates the three GoBilda laser distance sensors (heave, pitch, roll).",
+          "For each data point: position the sensor at a known location, then enter the channel and value.",
+          "  Heave values are in mm.",
+          "  Pitch and roll values are in degrees.",
+          "Collect at least 3 points per channel for a good spline fit.",
+          "Type 'done' when you have finished collecting all points.",
+          "",
+          "NOTE: Force bias is collected automatically before TestSensor and Run - no action needed here."
+        ],
+        "setupPrompts": [],
+        "pointPrompts": [
+          {
+            "key": "channel",
+            "type": "choice",
+            "choices": ["heave", "pitch", "roll"],
+            "prompt": "Channel (heave / pitch / roll):"
+          },
+          {
+            "key": "knownValue_mm",
+            "type": "number",
+            "promptTemplate": "Known position for {channel} ({unit}):",
+            "unitMap": { "heave": "mm", "pitch": "degrees", "roll": "degrees" }
+          }
+        ],
+        "minPointsPerChannel": 3,
+        "channels": ["heave", "pitch", "roll"],
+        "pointCommandTemplate": {
+          "cmd": "Calibrate",
+          "params": { "target": "motion_sensors" }
+        },
+        "finishCommand": {
+          "cmd": "Calibrate",
+          "params": { "target": "motion_sensors", "finished": true }
+        },
+        "finishKeyword": "done"
+      }
+    ]
+  },
+  "waveMakerProbeNode": {
+    "label": "Wave Maker Probe Node — Probe Height Calibration",
+    "phases": [
+      {
+        "id": "probe_gains",
+        "label": "Probe Gains",
+        "intro": [
+          "This wizard calibrates the wave probe height gains.",
+          "First, specify which probes are active (comma-separated indices, 1–8).",
+          "Then for each data point: set the probe to a known still-water height and enter that value.",
+          "Heights are in meters (e.g. 0.05 for 5 cm).",
+          "Collect at least 3 points. Type 'done' when finished."
+        ],
+        "setupPrompts": [
+          {
+            "key": "selectedProbes",
+            "type": "int_array",
+            "min": 1,
+            "max": 8,
+            "prompt": "Active probe indices (comma-separated, range 1–8, e.g. 1,2,3):"
+          }
+        ],
+        "pointPrompts": [
+          {
+            "key": "knownHeight_m",
+            "type": "number",
+            "prompt": "Known wave height in meters (e.g. 0.05):",
+            "unit": "m"
+          }
+        ],
+        "minPoints": 3,
+        "pointCommandTemplate": {
+          "cmd": "Calibrate",
+          "params": {}
+        },
+        "finishCommand": {
+          "cmd": "Calibrate",
+          "params": { "finished": true }
+        },
+        "finishKeyword": "done"
+      }
+    ]
+  }
+}

@@ -110,6 +110,16 @@
     /* ── Control tab layout ───────────────────────────────────── */
     .control-grid { display:grid; grid-template-columns:minmax(200px,1fr) 3fr; gap:12px; margin-bottom:12px; }
     @media(max-width:768px){ .control-grid{ grid-template-columns:1fr; } }
+
+    /* ── Calibration terminal ─────────────────────────────────── */
+    #calib-terminal { height:265px; overflow-y:auto; background:var(--bg); border:1px solid var(--border);
+                      border-radius:6px; padding:10px; font-size:.78rem; line-height:1.85;
+                      white-space:pre-wrap; word-break:break-all; }
+    .calib-info  { color:#67e8f9; }
+    .calib-user  { color:var(--text); font-style:italic; }
+    .calib-warn  { color:#fcd34d; }
+    .calib-ok    { color:#86efac; }
+    .calib-error { color:#fca5a5; }
   </style>
 </head>
 
@@ -173,16 +183,21 @@
 
           <div class="form-row">
             <label>Target node</label>
-            <select x-model="cmdTarget" @change="initPlot()">
+            <select x-model="cmdTarget" @change="onNodeChange()">
               <option value="">— select a node —</option>
-              <template x-for="[id] in Object.entries(nodes)" :key="id">
+              <template x-for="[id, node] in Object.entries(nodes).filter(([,n]) => n.online)" :key="id">
                 <option :value="id" x-text="id"></option>
               </template>
             </select>
           </div>
 
           <div x-show="!cmdTarget" style="color:var(--muted);font-size:.82rem;margin-top:8px">
-            Select a node to see available commands.
+            <span x-show="Object.values(nodes).some(n => !n.online)" style="color:#fcd34d">
+              Some nodes are offline — only online nodes are shown.
+            </span>
+            <span x-show="!Object.values(nodes).some(n => !n.online)">
+              Select a node to see available commands.
+            </span>
           </div>
 
           <div x-show="cmdTarget">
@@ -191,35 +206,86 @@
               <template x-for="item in getNodeCommands()" :key="item.label">
                 <button class="btn"
                         :class="cmdButtonClass(item.label)"
-                        :disabled="!cmdTarget"
-                        @click="sendCmd(cmdTarget, item.payload)"
+                        :disabled="!cmdTarget || (item.action === 'calibrate' && calibWizard.active)"
+                        @click="item.action === 'calibrate' ? startCalibration(cmdTarget) : sendCmd(cmdTarget, item.payload)"
                         x-text="item.label"></button>
               </template>
             </div>
           </div>
 
+          <!-- Calibration in-progress banner -->
+          <div x-show="calibWizard.active && calibWizard.nodeId === cmdTarget"
+               style="margin-top:12px;padding:8px 10px;background:#1c2c1c;border:1px solid #166534;
+                      border-radius:6px;font-size:.75rem">
+            <div style="color:#86efac;margin-bottom:6px">&#9881; Calibration in progress…</div>
+            <button class="btn btn-danger" style="width:100%;font-size:.78rem"
+                    @click="stopCalibration()">Cancel Calibration</button>
+          </div>
+
           <div class="flash mt" :class="{err: cmdFlash.startsWith('Error')}" x-text="cmdFlash"></div>
         </div>
 
-        <!-- Right: live data plot -->
+        <!-- Right: live data plot OR calibration terminal -->
         <div class="card">
-          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-            <span x-text="cmdTarget ? cmdTarget + ' · live data' : 'Live data'"></span>
-            <div style="display:flex;gap:8px;align-items:center">
-              <span style="font-size:.7rem;color:var(--muted)"
-                    x-text="plotRate > 0 ? plotRate + ' msg/s' : ''"></span>
-              <button class="btn btn-secondary" style="padding:2px 8px;font-size:.72rem"
-                      @click="clearPlot()">Clear</button>
+
+          <!-- Chart panel (hidden during calibration) -->
+          <div x-show="!calibWizard.active">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+              <span x-text="cmdTarget ? cmdTarget + ' · live data' : 'Live data'"></span>
+              <div style="display:flex;gap:8px;align-items:center">
+                <span style="font-size:.7rem;color:var(--muted)"
+                      x-text="plotRate > 0 ? plotRate + ' msg/s' : ''"></span>
+                <span style="font-size:.7rem;color:var(--muted);font-style:italic"
+                      x-show="plotUnits" x-text="plotUnits"></span>
+                <button class="btn btn-secondary" style="padding:2px 8px;font-size:.72rem"
+                        @click="clearPlot()">Clear</button>
+              </div>
+            </div>
+            <div x-show="plotChannels.length > 0"
+                 style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
+              <template x-for="ch in plotChannels" :key="ch">
+                <button class="btn" style="padding:2px 8px;font-size:.72rem"
+                        :class="plotVisibleChannels[ch] !== false ? 'btn-primary' : 'btn-secondary'"
+                        @click="toggleChannel(ch)"
+                        x-text="ch"></button>
+              </template>
+            </div>
+            <div style="position:relative;height:280px">
+              <canvas id="live-chart"></canvas>
+              <div x-show="plotChannels.length === 0"
+                   style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+                          color:var(--muted);font-size:.82rem;text-align:center;pointer-events:none">
+                No data yet — select a node and press TestSensor.
+              </div>
             </div>
           </div>
-          <div style="position:relative;height:280px">
-            <canvas id="live-chart"></canvas>
-            <div x-show="plotChannels.length === 0"
-                 style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-                        color:var(--muted);font-size:.82rem;text-align:center;pointer-events:none">
-              No data yet — select a node and press TestSensor.
+
+          <!-- Calibration terminal (shown during calibration) -->
+          <div x-show="calibWizard.active">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+              <span x-text="'&#9881; Calibrating: ' + calibWizard.nodeId"></span>
+              <button class="btn btn-danger" style="padding:2px 8px;font-size:.72rem"
+                      @click="stopCalibration()">Cancel</button>
+            </div>
+            <div id="calib-terminal">
+              <template x-for="(line, i) in calibWizard.log" :key="i">
+                <div :class="'calib-' + line.type" x-text="line.text"></div>
+              </template>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <input id="calib-input"
+                     type="text"
+                     x-model="calibWizard.input"
+                     @keydown.enter="calibHandleInput()"
+                     @keydown.escape="stopCalibration()"
+                     placeholder="Enter value — or type 'done' to finalize…"
+                     autocomplete="off"
+                     spellcheck="false" />
+              <button class="btn btn-primary" style="flex-shrink:0;padding:6px 14px"
+                      @click="calibHandleInput()">&#8629;</button>
             </div>
           </div>
+
         </div>
 
       </div><!-- /control-grid -->
@@ -350,12 +416,33 @@
       rawPayload: '',
       rawFlash: '',
 
+      // ── Calibration wizard ─────────────────────────────────────
+      calibProfiles: {},
+      calibWizard: {
+        active:             false,
+        nodeId:             '',
+        phase:              null,
+        state:              'idle',
+        setupPromptIdx:     0,
+        pointPromptIdx:     0,
+        setupAnswers:       {},
+        currentPointData:   {},
+        pointCount:         0,
+        pointsByChannel:    {},
+        _warnedAboutPoints: false,
+        log:                [],
+        input:              '',
+      },
+
       // ── Plot state ─────────────────────────────────────────────
-      plotChart:    null,
-      plotChannels: [],
-      plotMaxPts:   200,
-      plotRate:     0,
-      _plotCount:   0,
+      plotChart:           null,
+      plotChannels:        [],
+      plotVisibleChannels: {},
+      plotUnits:           '',
+      plotMaxPts:          200,
+      plotRate:            0,
+      _plotCount:          0,
+      _initPending:        false,
 
       // ── Experiment tab ─────────────────────────────────────────
       templates: [],
@@ -386,6 +473,11 @@
         setInterval(() => this.pollNodes(), 10_000);
         // Track live data message rate
         setInterval(() => { this.plotRate = this._plotCount; this._plotCount = 0; }, 1000);
+        // Re-initialise chart when calibration wizard closes (canvas was hidden during init)
+        // Re-init chart when calibration wizard closes — preserve channels so buttons stay visible
+        this.$watch('calibWizard.active', val => {
+          if (!val) this.initPlot();
+        });
       },
 
       // ══════════════════════════════════════════════════════════
@@ -448,8 +540,14 @@
 
         if (channel === 'log') {
           const level = msg.level || 'INFO';
-          const text  = `[${nodeId}] ${msg.message || raw}`;
+          const text  = `[${nodeId}] ${msg.msg || msg.message || raw}`;
           this.addLog(level, text);
+          // Mirror to calibration terminal when this node is being calibrated
+          if (this.calibWizard.active && nodeId === this.calibWizard.nodeId) {
+            const tt = level.toUpperCase() === 'ERROR' ? 'error'
+                     : level.toUpperCase() === 'WARN'  ? 'warn' : 'info';
+            this.calibPrint(tt, `  [node] ${msg.msg || msg.message || raw}`);
+          }
         }
 
         if (channel === 'data') {
@@ -564,8 +662,8 @@
         const n = this.cmdTarget ? this.nodes[this.cmdTarget] : null;
         const items = [];
         if (n && n.hasSensor) {
-          items.push({ label: 'Calibrate',   payload: { cmd: 'Calibrate', params: { target: 'force_bias' } } });
-          items.push({ label: 'TestSensor',  payload: { cmd: 'Test',      params: { target: 'sensor'     } } });
+          items.push({ label: 'Calibrate', action: 'calibrate' });
+          items.push({ label: 'TestSensor',  payload: { cmd: 'Test', params: { target: 'sensor' } } });
         }
         if (n && n.hasActuator) {
           items.push({ label: 'TestActuator', payload: { cmd: 'Test', params: { target: 'actuator' } } });
@@ -584,12 +682,25 @@
       // ══════════════════════════════════════════════════════════
       //  Live data plot
       // ══════════════════════════════════════════════════════════
+
+      // Called only when the user explicitly picks a different node — wipes all plot state
+      onNodeChange() {
+        this.plotChannels        = [];
+        this.plotVisibleChannels = {};
+        this.plotUnits           = '';
+        this._initPending        = false;
+        this.initPlot();
+      },
+
       initPlot() {
+        if (this._initPending) return;   // already scheduled — avoid re-entrancy
+        this._initPending = true;
         this.$nextTick(() => {
+          this._initPending = false;
           if (this.plotChart) { this.plotChart.destroy(); this.plotChart = null; }
-          this.plotChannels = [];
           const canvas = document.getElementById('live-chart');
           if (!canvas) return;
+          const COLORS = ['#38bdf8','#86efac','#fcd34d','#fb923c','#d8b4fe','#fca5a5','#5eead4'];
           this.plotChart = new Chart(canvas.getContext('2d'), {
             type: 'line',
             data: { labels: [], datasets: [] },
@@ -603,21 +714,53 @@
               scales: {
                 x: { display: false },
                 y: {
+                  grace: '5%',
                   ticks: { color: '#94a3b8', font: { size: 10 } },
-                  grid:  { color: '#334155' }
+                  grid:  { color: '#334155' },
+                  title: { display: false, text: '', color: '#94a3b8', font: { size: 10 } },
                 }
               }
             }
           });
+          // Restore any channels that accumulated in plotChannels while init was pending
+          this.plotChannels.forEach((name, idx) => {
+            this.plotChart.data.datasets.push({
+              label:           name,
+              data:            [],
+              hidden:          !this.plotVisibleChannels[name],
+              borderColor:     COLORS[idx % COLORS.length],
+              backgroundColor: 'transparent',
+              borderWidth:     1.5,
+              pointRadius:     0,
+              tension:         0.2,
+            });
+          });
+          if (this.plotUnits) {
+            this.plotChart.options.scales.y.title.text    = this.plotUnits;
+            this.plotChart.options.scales.y.title.display = true;
+          }
+          if (this.plotChannels.length) this.plotChart.update('none');
         });
       },
 
       clearPlot() {
         if (!this.plotChart) return;
-        this.plotChart.data.labels = [];
-        this.plotChart.data.datasets.forEach(d => { d.data = []; });
-        this.plotChannels = [];
+        this.plotChart.data.labels   = [];
+        this.plotChart.data.datasets = [];   // remove datasets entirely to avoid duplicates on next run
+        this.plotChannels            = [];
+        this.plotVisibleChannels     = {};
+        this.plotUnits               = '';
+        this.plotChart.options.scales.y.title.display = false;
+        this.plotChart.options.scales.y.title.text    = '';
         this.plotChart.update('none');
+      },
+
+      toggleChannel(ch) {
+        this.plotVisibleChannels[ch] = !this.plotVisibleChannels[ch];
+        this.plotVisibleChannels = { ...this.plotVisibleChannels };
+        if (!this.plotChart) return;
+        const ds = this.plotChart.data.datasets.find(d => d.label === ch);
+        if (ds) { ds.hidden = !this.plotVisibleChannels[ch]; this.plotChart.update('none'); }
       },
 
       addDataPoint(nodeId, msg) {
@@ -628,14 +771,25 @@
         const fields = Object.entries(msg).filter(([k, v]) => !SKIP.has(k) && typeof v === 'number');
         if (!fields.length) return;
         this._plotCount++;
+        // Update Y-axis units label if present
+        if (msg.units && msg.units !== this.plotUnits) {
+          this.plotUnits = msg.units;
+          if (this.plotChart) {
+            this.plotChart.options.scales.y.title.text    = msg.units;
+            this.plotChart.options.scales.y.title.display = true;
+          }
+        }
         // Register any new channels as datasets
         fields.forEach(([name]) => {
           if (!this.plotChannels.includes(name)) {
             this.plotChannels.push(name);
+            if (this.plotVisibleChannels[name] === undefined)
+              this.plotVisibleChannels[name] = true;
             if (this.plotChart) {
               this.plotChart.data.datasets.push({
                 label:           name,
                 data:            [],
+                hidden:          !this.plotVisibleChannels[name],
                 borderColor:     COLORS[(this.plotChannels.length - 1) % COLORS.length],
                 backgroundColor: 'transparent',
                 borderWidth:     1.5,
@@ -651,11 +805,285 @@
         if (this.plotChart.data.labels.length > this.plotMaxPts)
           this.plotChart.data.labels.shift();
         this.plotChart.data.datasets.forEach(ds => {
+          ds.hidden = !this.plotVisibleChannels[ds.label];
           const v = msg[ds.label];
           ds.data.push(v !== undefined ? v : null);
           if (ds.data.length > this.plotMaxPts) ds.data.shift();
         });
         this.plotChart.update('none');
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Calibration wizard
+      // ══════════════════════════════════════════════════════════
+      async startCalibration(nodeId) {
+        if (!nodeId) { this.cmdFlash = 'Error: no node selected'; return; }
+        if (!Object.keys(this.calibProfiles).length) {
+          try {
+            const res = await fetch('/api/calibration-profiles');
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            this.calibProfiles = await res.json();
+          } catch (e) {
+            this.cmdFlash = 'Error: could not load calibration profiles — ' + e.message;
+            return;
+          }
+        }
+        const profile = this.calibProfiles[nodeId];
+        if (!profile || !profile.phases || !profile.phases.length) {
+          this.cmdFlash = `No calibration profile defined for ${nodeId}`;
+          return;
+        }
+        const phase = profile.phases[0];
+        this.calibWizard = {
+          active:             true,
+          nodeId,
+          phase,
+          state:              (phase.setupPrompts && phase.setupPrompts.length) ? 'setup' : 'point',
+          setupPromptIdx:     0,
+          pointPromptIdx:     0,
+          setupAnswers:       {},
+          currentPointData:   {},
+          pointCount:         0,
+          pointsByChannel:    {},
+          _warnedAboutPoints: false,
+          log:                [],
+          input:              '',
+        };
+        this.calibPrint('info', '\u2550'.repeat(52));
+        this.calibPrint('info', profile.label || `Calibration \u2014 ${nodeId}`);
+        if (phase.label) this.calibPrint('info', `Phase: ${phase.label}`);
+        this.calibPrint('info', '\u2550'.repeat(52));
+        for (const line of (phase.intro || [])) this.calibPrint('info', line);
+        this.calibPrint('info', '');
+        if (this.calibWizard.state === 'setup') {
+          this.calibAskNextSetupPrompt();
+        } else {
+          this.calibAskNextPointPrompt();
+        }
+        this.$nextTick(() => {
+          const el = document.getElementById('calib-input');
+          if (el) el.focus();
+        });
+      },
+
+      calibPrint(type, text) {
+        this.calibWizard.log.push({ type, text });
+        this.$nextTick(() => this.calibScrollBottom());
+      },
+
+      calibScrollBottom() {
+        const el = document.getElementById('calib-terminal');
+        if (el) el.scrollTop = el.scrollHeight;
+      },
+
+      calibAskNextSetupPrompt() {
+        const p = this.calibWizard.phase.setupPrompts[this.calibWizard.setupPromptIdx];
+        if (!p) return;
+        this.calibPrint('info', '\u25b6 ' + p.prompt);
+      },
+
+      calibAskNextPointPrompt() {
+        const phase   = this.calibWizard.phase;
+        const p       = phase.pointPrompts[this.calibWizard.pointPromptIdx];
+        if (!p) return;
+        const isFirst = this.calibWizard.pointPromptIdx === 0;
+        const keyword = phase.finishKeyword || 'done';
+        if (isFirst && this.calibWizard.pointCount > 0) {
+          this.calibPrint('info', '');
+          if (phase.channels) {
+            const counts = phase.channels.map(ch =>
+              `${ch}: ${this.calibWizard.pointsByChannel[ch] || 0}`
+            ).join(' | ');
+            this.calibPrint('info', `Points \u2014 ${counts}  (type '${keyword}' to finalize)`);
+          } else {
+            this.calibPrint('info', `Points collected: ${this.calibWizard.pointCount}  (type '${keyword}' to finalize)`);
+          }
+        } else if (isFirst) {
+          this.calibPrint('info', '');
+        }
+        let prompt = p.prompt || '';
+        if (p.promptTemplate) {
+          const ch   = this.calibWizard.currentPointData['channel'] || '';
+          const unit = (p.unitMap && ch) ? (p.unitMap[ch] || p.unit || '') : (p.unit || '');
+          prompt = p.promptTemplate.replace('{channel}', ch).replace('{unit}', unit);
+        }
+        this.calibPrint('info', '\u25b6 ' + prompt);
+      },
+
+      calibHandleInput() {
+        const raw = (this.calibWizard.input || '').trim();
+        this.calibWizard.input = '';
+        if (!raw) return;
+        this.calibPrint('user', '  > ' + raw);
+        const phase   = this.calibWizard.phase;
+        const isFirst = this.calibWizard.pointPromptIdx === 0;
+        if (this.calibWizard.state === 'setup') {
+          const p = phase.setupPrompts[this.calibWizard.setupPromptIdx];
+          const r = this.calibValidate(p, raw);
+          if (!r.ok) {
+            this.calibPrint('warn', '\u26a0 ' + r.msg);
+            this.calibPrint('info', '\u25b6 ' + p.prompt);
+            return;
+          }
+          this.calibWizard.setupAnswers[p.key] = r.value;
+          this.calibWizard.setupPromptIdx++;
+          if (this.calibWizard.setupPromptIdx >= phase.setupPrompts.length) {
+            this.calibWizard.state = 'point';
+            this.calibPrint('ok', '\u2713 Setup complete.');
+            this.calibAskNextPointPrompt();
+          } else {
+            this.calibAskNextSetupPrompt();
+          }
+          return;
+        }
+        // point state
+        if (isFirst && raw.toLowerCase() === (phase.finishKeyword || 'done').toLowerCase()) {
+          this.calibTryFinalize();
+          return;
+        }
+        const p = phase.pointPrompts[this.calibWizard.pointPromptIdx];
+        const r = this.calibValidate(p, raw);
+        if (!r.ok) {
+          this.calibPrint('warn', '\u26a0 ' + r.msg);
+          let prompt = p.prompt || '';
+          if (p.promptTemplate) {
+            const ch   = this.calibWizard.currentPointData['channel'] || '';
+            const unit = (p.unitMap && ch) ? (p.unitMap[ch] || '') : (p.unit || '');
+            prompt = p.promptTemplate.replace('{channel}', ch).replace('{unit}', unit);
+          }
+          this.calibPrint('info', '\u25b6 ' + prompt);
+          return;
+        }
+        this.calibWizard.currentPointData[p.key] = r.value;
+        this.calibWizard.pointPromptIdx++;
+        if (this.calibWizard.pointPromptIdx >= phase.pointPrompts.length) {
+          this.calibBuildAndSend();
+        } else {
+          this.calibAskNextPointPrompt();
+        }
+      },
+
+      calibValidate(p, raw) {
+        switch (p.type) {
+          case 'choice': {
+            const m = (p.choices || []).find(c => c.toLowerCase() === raw.toLowerCase());
+            if (!m) return { ok: false, msg: `Not a valid choice. Options: ${p.choices.join(' / ')}` };
+            return { ok: true, value: m };
+          }
+          case 'number': {
+            const n = parseFloat(raw);
+            if (!isFinite(n)) return { ok: false, msg: `Expected a number (e.g. 2.5). Got: '${raw}'` };
+            return { ok: true, value: n };
+          }
+          case 'int_array': {
+            const parts = raw.split(',').map(s => parseInt(s.trim(), 10));
+            if (!parts.length || parts.some(isNaN))
+              return { ok: false, msg: `Expected comma-separated integers. Got: '${raw}'` };
+            const bad = parts.filter(n => n < (p.min || 1) || n > (p.max || 99));
+            if (bad.length)
+              return { ok: false, msg: `Index out of range: [${bad.join(', ')}]. Valid range: ${p.min}\u20138.` };
+            return { ok: true, value: parts };
+          }
+          default:
+            return { ok: true, value: raw };
+        }
+      },
+
+      calibBuildAndSend() {
+        const phase = this.calibWizard.phase;
+        const cmd   = JSON.parse(JSON.stringify(phase.pointCommandTemplate));
+        Object.assign(cmd.params, this.calibWizard.setupAnswers, this.calibWizard.currentPointData);
+        const ch = this.calibWizard.currentPointData['channel'];
+        if (ch) this.calibWizard.pointsByChannel[ch] = (this.calibWizard.pointsByChannel[ch] || 0) + 1;
+        this.calibWizard.pointCount++;
+        this.calibWizard._warnedAboutPoints = false;
+        fetch(`/api/command/${encodeURIComponent(this.calibWizard.nodeId)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cmd),
+        }).then(async res => {
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            this.calibPrint('error', '\u2715 Command rejected: ' + (d.error || res.statusText));
+          }
+        }).catch(e => this.calibPrint('error', '\u2715 Send error: ' + e.message));
+        this.calibWizard.currentPointData  = {};
+        this.calibWizard.pointPromptIdx    = 0;
+        this.calibAskNextPointPrompt();
+      },
+
+      calibTryFinalize() {
+        const phase = this.calibWizard.phase;
+        if (phase.channels) {
+          const min   = phase.minPointsPerChannel || 2;
+          const short = phase.channels.filter(ch => (this.calibWizard.pointsByChannel[ch] || 0) < min);
+          if (short.length && !this.calibWizard._warnedAboutPoints) {
+            this.calibPrint('warn', `\u26a0 Channels with fewer than ${min} points: ${short.join(', ')}`);
+            const counts = phase.channels.map(ch =>
+              `${ch}: ${this.calibWizard.pointsByChannel[ch] || 0}`).join(' | ');
+            this.calibPrint('warn', `  Counts \u2014 ${counts}`);
+            this.calibPrint('info', `  Type '${phase.finishKeyword}' again to finalize anyway.`);
+            this.calibWizard._warnedAboutPoints = true;
+            this.calibAskNextPointPrompt();
+            return;
+          }
+        } else {
+          const min = phase.minPoints || 3;
+          if (this.calibWizard.pointCount < min && !this.calibWizard._warnedAboutPoints) {
+            this.calibPrint('warn', `\u26a0 Only ${this.calibWizard.pointCount} point(s) \u2014 ${min} recommended.`);
+            this.calibPrint('info', `  Type '${phase.finishKeyword}' again to finalize anyway.`);
+            this.calibWizard._warnedAboutPoints = true;
+            this.calibAskNextPointPrompt();
+            return;
+          }
+        }
+        this.calibFinalize();
+      },
+
+      calibFinalize() {
+        const phase = this.calibWizard.phase;
+        fetch(`/api/command/${encodeURIComponent(this.calibWizard.nodeId)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(JSON.parse(JSON.stringify(phase.finishCommand))),
+        }).then(async res => {
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            this.calibPrint('error', '\u2715 Finalize rejected: ' + (d.error || res.statusText));
+          }
+        }).catch(e => this.calibPrint('error', '\u2715 Finalize send error: ' + e.message));
+        this.calibPrint('info', '');
+        this.calibPrint('ok', '\u2713 Calibration complete \u2014 finalize command sent to ' + this.calibWizard.nodeId);
+        if (phase.channels) {
+          for (const ch of phase.channels)
+            this.calibPrint('ok', `  ${ch}: ${this.calibWizard.pointsByChannel[ch] || 0} point(s)`);
+        } else {
+          this.calibPrint('ok', `  Total points: ${this.calibWizard.pointCount}`);
+        }
+        this.calibPrint('info', '');
+        this.calibPrint('info', 'Closing terminal in 3 s\u2026');
+        setTimeout(() => { this.calibWizard.active = false; }, 3000);
+      },
+
+      async stopCalibration() {
+        this.calibPrint('warn', '');
+        this.calibPrint('warn', '\u26a0 WARNING: Calibration sequence was NOT completed.');
+        this.calibPrint('warn', '  Sending Reset to return node to IDLE\u2026');
+        try {
+          const res = await fetch(`/api/command/${encodeURIComponent(this.calibWizard.nodeId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cmd: 'Reset' }),
+          });
+          if (res.ok) {
+            this.calibPrint('ok', '\u2713 Reset sent to ' + this.calibWizard.nodeId);
+          } else {
+            this.calibPrint('error', '\u2715 Reset rejected: ' + res.statusText);
+          }
+        } catch (e) {
+          this.calibPrint('error', '\u2715 Reset send error: ' + e.message);
+        }
+        setTimeout(() => { this.calibWizard.active = false; }, 1500);
       },
 
       // ══════════════════════════════════════════════════════════

@@ -100,12 +100,11 @@ class ControlNode:
                     if "hasActuator" in node_def:
                         entry["hasActuator"] = node_def["hasActuator"]
 
-        # Initialise CommClient and RestClient
+        # Initialise CommClient and RestClient — callback must be set BEFORE construction
+        # so CommClient reads it at init time when it stores config['onMessageCallback']
+        self.cfg['onMessageCallback'] = self._on_message
         self.comm = CommClient(cfg)
         self.rest = RestClient(cfg)
-
-        # Wire incoming message callback
-        self.cfg['onMessageCallback'] = self._on_message
 
     def connect(self):
         """Connect to the MQTT broker and start the web UI server."""
@@ -113,7 +112,33 @@ class ControlNode:
         self.logger.info("ControlNode connected to broker at %s:%d",
                          self.cfg.get('brokerAddress', 'localhost'),
                          self.cfg.get('brokerPort', 1883))
+        self._start_offline_monitor()
         self._start_web_server()
+
+    NODE_TIMEOUT_SECS  = 600   # mark offline after 10 min of silence
+    MONITOR_PERIOD_SECS = 30   # how often the monitor thread wakes
+
+    def _start_offline_monitor(self):
+        """Background thread that marks nodes offline after NODE_TIMEOUT_SECS of silence."""
+        def monitor():
+            while self._running:
+                time.sleep(self.MONITOR_PERIOD_SECS)
+                now = time.time()
+                changed = False
+                for node_id, entry in list(self.node_registry.items()):
+                    last = entry.get("last_seen")
+                    if last and (now - last) > self.NODE_TIMEOUT_SECS:
+                        if entry.get("status") != "offline":
+                            entry["status"] = "offline"
+                            self.logger.info(
+                                "Node timed out (no heartbeat for %.0f min): %s",
+                                self.NODE_TIMEOUT_SECS / 60, node_id)
+                            changed = True
+                if changed:
+                    self._save_registry()
+
+        t = threading.Thread(target=monitor, name="offline-monitor", daemon=True)
+        t.start()
 
     def _start_web_server(self):
         """
@@ -141,7 +166,15 @@ class ControlNode:
 
         @web.route("/api/nodes")
         def api_nodes():
-            return jsonify(self.node_registry)
+            # Annotate each entry with a live `online` flag before serving
+            now = time.time()
+            result = {}
+            for node_id, entry in self.node_registry.items():
+                e = dict(entry)
+                last = e.get("last_seen")
+                e["online"] = bool(last and (now - last) < self.NODE_TIMEOUT_SECS)
+                result[node_id] = e
+            return jsonify(result)
 
         @web.route("/api/templates")
         def api_templates():
@@ -161,6 +194,14 @@ class ControlNode:
             if not os.path.isfile(path):
                 return jsonify({"error": f"Template '{safe}' not found"}), 404
             with open(path) as f:
+                return jsonify(json.load(f))
+
+        @web.route("/api/calibration-profiles")
+        def api_calibration_profiles():
+            profiles_path = os.path.join(REPO_ROOT, "config", "calibration_profiles.json")
+            if not os.path.isfile(profiles_path):
+                return jsonify({}), 404
+            with open(profiles_path) as f:
                 return jsonify(json.load(f))
 
         @web.route("/api/command/<node_id>", methods=["POST"])
@@ -238,14 +279,16 @@ class ControlNode:
             self.logger.info("New node online: %s", node_id)
 
         entry = self.node_registry[node_id]
-        entry["node_id"]           = node_id
-        entry["last_seen"]         = now
+        entry["node_id"]            = node_id
+        entry["last_seen"]          = now
         entry["last_seen_readable"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
-        entry["status"]            = "online"
+        entry["status"]             = "online"
 
         if isinstance(payload, dict):
             if "state" in payload:
                 entry["state"] = payload["state"]
+            if "ip" in payload:
+                entry["ip"] = payload["ip"]
             if "capabilities" in payload:
                 entry["capabilities"] = payload["capabilities"]
 
