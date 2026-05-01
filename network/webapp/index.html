@@ -44,7 +44,7 @@
     .node-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
     .node-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px; position:relative; }
     .node-name { font-weight:700; font-size:.9rem; }
-    .node-state { font-size:.75rem; font-weight:700; padding:2px 8px; border-radius:3px; display:inline-block; margin-top:4px; }
+    .node-state { font-size:.88rem; font-weight:700; padding:5px 14px; border-radius:5px; display:inline-block; margin-top:4px; letter-spacing:.03em; }
     .node-meta  { font-size:.7rem; color:var(--muted); margin-top:6px; line-height:1.6; }
     .node-online { border-left:3px solid #22c55e; }
     .node-offline { border-left:3px solid #64748b; opacity:.6; }
@@ -122,9 +122,21 @@
     .calib-error { color:#fca5a5; }
 
     /* ── Experiment tab ───────────────────────────────────────── */
+    .exp-layout { display:grid; grid-template-columns:1fr 2fr; gap:12px; }
+    @media(max-width:640px){ .exp-layout{ grid-template-columns:1fr; } }
     .exp-desc { font-size:.82rem; color:var(--muted); line-height:1.6; margin-bottom:14px; padding:10px; background:var(--bg); border-radius:6px; border:1px solid var(--border); }
     .exp-field-hint { font-size:.7rem; color:var(--muted); margin-top:3px; }
     .exp-state-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+    .exp-debug-wrap { margin-top:14px; display:flex; gap:10px; }
+    .exp-debug-panel { flex:1; min-width:0; }
+    .exp-debug-header { font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:4px; display:flex; align-items:center; justify-content:space-between; }
+    .exp-debug-terminal { height:180px; overflow-y:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:.75rem; line-height:1.7; white-space:pre-wrap; word-break:break-all; }
+    /* ── Data tab ─────────────────────────────────────────────── */
+    .data-table { width:100%; border-collapse:collapse; font-size:.82rem; margin-top:10px; }
+    .data-table th { text-align:left; color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; padding:6px 10px; border-bottom:1px solid var(--border); }
+    .data-table td { padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+    .data-table tr:last-child td { border-bottom:none; }
+    .data-table tr:hover td { background:rgba(255,255,255,.03); }
   </style>
 </head>
 
@@ -362,7 +374,7 @@
     <!-- ════════════════ EXPERIMENT TAB ═════════════════════════ -->
 <!-- ════════════════ EXPERIMENT TAB ═════════════════════════ -->
     <div class="tab" :class="{active: activeTab==='Experiment'}">
-      <div class="grid-2">
+      <div class="exp-layout">
 
         <!-- Template browser -->
         <div class="card">
@@ -440,14 +452,106 @@
             </button>
             <button class="btn btn-secondary"
                     :disabled="!expDataAvailable"
-                    @click="expDownload()">
-              &#8595; Download data
+                    @click="expOpenPlot()">
+              &#128202; View Plot
             </button>
+            <button class="btn btn-secondary"
+                    :disabled="!expDataAvailable"
+                    @click="expDownload()">
+              &#8595; Download
+            </button>
+            <button class="btn" :class="expDebugOpen ? 'btn-danger' : 'btn-secondary'"
+                    x-show="expNodeTarget"
+                    @click="expDebugOpen = !expDebugOpen"
+                    x-text="expDebugOpen ? '&#128269; Hide debug' : '&#128269; Debug'"></button>
           </div>
 
           <div class="flash mt" :class="{err: expFlash.startsWith('Error')}" x-text="expFlash"></div>
         </div>
 
+      </div>
+
+      <!-- Debug terminals — appear below both cards -->
+      <div class="exp-debug-wrap" x-show="expDebugOpen && expNodeTarget">
+        <template x-for="nodeId in [expNodeTarget].filter(Boolean)" :key="nodeId">
+          <div class="exp-debug-panel">
+            <div class="exp-debug-header">
+              <span x-text="'Debug: '+nodeId"></span>
+              <button class="btn btn-secondary" style="padding:1px 8px;font-size:.7rem"
+                      @click="expDebugLogs[nodeId]=[]; expDebugLogs={...expDebugLogs}">Clear</button>
+            </div>
+            <div class="exp-debug-terminal" :id="'dbg-'+nodeId"
+                 x-effect="$el.scrollTop = $el.scrollHeight">
+              <template x-for="(line, i) in (expDebugLogs[nodeId] || [])" :key="i">
+                <div :class="'log-'+line.level" x-text="line.text"></div>
+              </template>
+              <div x-show="!(expDebugLogs[nodeId]||[]).length" style="color:var(--muted)">No log messages yet for <span x-text="nodeId"></span>.</div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ════════════════ DATA TAB ═══════════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='Data'}">
+      <div class="card" style="max-width:900px">
+        <div class="card-title">Session data browser &mdash; runs stored this session</div>
+
+        <!-- Node selector row -->
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+          <div style="flex:1;min-width:160px">
+            <label>Node</label>
+            <select x-model="dataNodeId" @change="dataFetchRuns()">
+              <option value="">&mdash; select node &mdash;</option>
+              <template x-for="n in dataNodeList" :key="n">
+                <option :value="n" x-text="n"></option>
+              </template>
+            </select>
+          </div>
+          <button class="btn btn-secondary" @click="dataFetchNodes()">&#8635; Refresh</button>
+        </div>
+
+        <!-- Run table -->
+        <div x-show="dataRuns.length">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Run name (tag)</th>
+                <th>Format</th>
+                <th>Modified</th>
+                <th>Size</th>
+                <th style="text-align:right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="run in dataRuns" :key="run.tag">
+                <tr>
+                  <td x-text="run.tag"></td>
+                  <td><span style="font-size:.7rem;color:var(--muted)" x-text="run.ext.toUpperCase()"></span></td>
+                  <td style="color:var(--muted);font-size:.78rem" x-text="run.modified"></td>
+                  <td style="color:var(--muted);font-size:.78rem" x-text="run.size_kb + ' KB'"></td>
+                  <td style="text-align:right">
+                    <div style="display:flex;gap:6px;justify-content:flex-end">
+                      <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem"
+                              @click="dataOpenPlot(run.tag)">&#128202; Plot</button>
+                      <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem"
+                              @click="dataDownload(run.tag)">&#8595; Download</button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div x-show="!dataRuns.length && dataNodeId" style="color:var(--muted);font-size:.82rem;margin-top:6px">
+          No runs stored for <span x-text="dataNodeId"></span> this session.
+        </div>
+        <div x-show="!dataNodeId" style="color:var(--muted);font-size:.82rem;margin-top:6px">
+          Select a node above to see available runs.
+        </div>
+
+        <div class="flash mt" :class="{err: dataFlash.startsWith('Error')}" x-text="dataFlash"></div>
       </div>
     </div>
 
@@ -490,7 +594,7 @@
     let _chart = null;   // kept outside Alpine reactive state — prevents proxy interference
     return {
       // ── Tab state ──────────────────────────────────────────────
-      tabs: ['System', 'Control', 'Experiment', 'Log'],
+      tabs: ['System', 'Control', 'Experiment', 'Data', 'Log'],
       activeTab: 'System',
 
       // ── MQTT ───────────────────────────────────────────────────
@@ -552,6 +656,15 @@
       expFields:        {},
       expFlash:         '',
       expDataAvailable: false,
+      expDebugOpen:     false,
+      expDebugLogs:     {},   // { nodeId: [{level, text}, ...] }
+      MAX_DEBUG_LINES:  100,
+
+      // ── Data tab ───────────────────────────────────────────────
+      dataNodeId:   '',
+      dataNodeList: [],
+      dataRuns:     [],
+      dataFlash:    '',
 
       // ── Log tab ────────────────────────────────────────────────
       logLines: [],       // [{level, text}]
@@ -580,6 +693,10 @@
         // Re-init chart when calibration wizard closes — preserve channels so buttons stay visible
         this.$watch('calibWizard.active', val => {
           if (!val) this.initPlot();
+        });
+        // Refresh data node list whenever user visits Data tab
+        this.$watch('activeTab', tab => {
+          if (tab === 'Data') this.dataFetchNodes();
         });
       },
 
@@ -630,9 +747,11 @@
 
         if (channel === 'status') {
           const existing = this.nodes[nodeId] || {};
+          const isHeartbeat = !!msg.clientID; // heartbeats include clientID; FSM transitions do not
           this.nodes[nodeId] = {
             ...existing,
-            state:    msg.state    || existing.state || 'UNKNOWN',
+            // Only update state from FSM messages, not from heartbeats (which hardcode 'READY')
+            state:    isHeartbeat ? (existing.state || 'UNKNOWN') : (msg.state || existing.state || 'UNKNOWN'),
             ip:       msg.ip       || existing.ip    || '—',
             lastSeen: new Date().toLocaleTimeString(),
             online:   true,
@@ -640,9 +759,9 @@
           // Trigger Alpine reactivity
           this.nodes = { ...this.nodes };
           // Set expDataAvailable when experiment target node reaches DONE
-          if (nodeId === this.expNodeTarget && msg.state === 'DONE') {
+          if (!isHeartbeat && nodeId === this.expNodeTarget && msg.state === 'DONE') {
             this.expDataAvailable = true;
-            this.expFlash = 'Run complete — data ready to download.';
+            this.expFlash = 'Run complete — data ready.';
             setTimeout(() => { this.expFlash = ''; }, 6000);
           }
         }
@@ -656,6 +775,18 @@
             const tt = level.toUpperCase() === 'ERROR' ? 'error'
                      : level.toUpperCase() === 'WARN'  ? 'warn' : 'info';
             this.calibPrint(tt, `  [node] ${msg.msg || msg.message || raw}`);
+          }
+          // Push to experiment debug terminal if open for this node
+          if (this.expDebugOpen) {
+            const expNodes = [this.expNodeTarget].filter(Boolean);
+            if (expNodes.includes(nodeId)) {
+              if (!this.expDebugLogs[nodeId]) this.expDebugLogs[nodeId] = [];
+              const ts = new Date().toLocaleTimeString();
+              this.expDebugLogs[nodeId].push({ level: level.toUpperCase(), text: `${ts}  ${msg.msg || msg.message || raw}` });
+              if (this.expDebugLogs[nodeId].length > this.MAX_DEBUG_LINES)
+                this.expDebugLogs[nodeId].splice(0, this.expDebugLogs[nodeId].length - this.MAX_DEBUG_LINES);
+              this.expDebugLogs = { ...this.expDebugLogs };
+            }
           }
         }
 
@@ -722,6 +853,9 @@
           params[f.key] = f.type === 'number' ? Number(val) : val;
         }
         this.expDataAvailable = false;
+        // Clear debug terminal for this node on new configure
+        if (this.expNodeTarget) this.expDebugLogs[this.expNodeTarget] = [];
+        this.expDebugLogs = { ...this.expDebugLogs };
         this.sendCmd(this.expNodeTarget, { cmd: 'Run', params });
         this.expFlash = `Configure sent to ${this.expNodeTarget} — awaiting CONFIGUREPENDING…`;
         setTimeout(() => { this.expFlash = ''; }, 5000);
@@ -754,6 +888,186 @@
         } catch (e) {
           this.expFlash = 'Error: ' + e.message;
         }
+      },
+
+      async expOpenPlot() {
+        try {
+          const url = `http://${location.hostname}:5000/data/${this.expNodeTarget}?latest=true`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const runName = this.expFields?.name || `${this.expNodeTarget}_latest`;
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(this.expNodeTarget, runName, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) {
+          this.expFlash = 'Error opening plot: ' + e.message;
+        }
+      },
+
+      _parseRestResponse(resp) {
+        let columns, rows;
+        if (resp.format === 'csv') {
+          const lines = resp.csv.trim().split('\n');
+          columns = lines[0].split(',').map(h => h.trim());
+          rows = lines.slice(1).map(l => l.split(',').map(v => { const n = Number(v); return isNaN(n) ? v.trim() : n; }));
+        } else {
+          const data = resp.data;
+          if (!data || !data.length) throw new Error('No data in response');
+          columns = Object.keys(data[0]);
+          rows = data.map(d => columns.map(c => d[c]));
+        }
+        return { columns, rows };
+      },
+
+      buildPlotHtml(nodeId, runName, columns, rows) {
+        const SKIP   = new Set(['timestamp', 'clientID', 'type', 'units']);
+        const COLORS = ['#38bdf8','#86efac','#fcd34d','#fb923c','#d8b4fe','#fca5a5','#5eead4','#f472b6'];
+        const xIdx   = columns.indexOf('nTime');
+        const plotCols = columns.filter((c, i) => !SKIP.has(c) && i !== xIdx);
+
+        const labels = xIdx >= 0
+          ? rows.map(r => typeof r[xIdx] === 'number' ? r[xIdx].toFixed(3) : String(r[xIdx]))
+          : rows.map((_, i) => i);
+
+        const datasets = plotCols.map((col, i) => {
+          const ci = columns.indexOf(col);
+          return {
+            label: col,
+            data: rows.map(r => { const v = r[ci]; return typeof v === 'number' ? v : parseFloat(v); }),
+            borderColor: COLORS[i % COLORS.length],
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.1,
+          };
+        });
+
+        const chartCfg   = JSON.stringify({ labels, datasets });
+        const csvContent = [columns.join(','), ...rows.map(r => r.map(v => String(v)).join(','))].join('\n');
+        const eName = JSON.stringify(runName);
+        const eNode = JSON.stringify(nodeId);
+        const eCsv  = JSON.stringify(csvContent);
+        const nSamp = rows.length;
+        const nChan = plotCols.length;
+
+        return `<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8"/>
+  <title>${runName} | ${nodeId}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"><\/script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    :root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8}
+    body{background:var(--bg);color:var(--text);font-family:ui-monospace,monospace;font-size:14px;display:flex;flex-direction:column;height:100vh}
+    header{padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-shrink:0}
+    header h1{font-size:.95rem;letter-spacing:.04em}header .meta{font-size:.72rem;color:var(--muted)}
+    .controls{padding:8px 20px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;align-items:center;flex-shrink:0}
+    .ch-btn{cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text);padding:3px 10px;border-radius:4px;font-family:inherit;font-size:.72rem;transition:.15s}
+    .ch-btn.hidden-ch{opacity:.3}
+    .chart-wrap{flex:1;padding:16px 20px;min-height:0}
+    canvas{width:100%!important;height:100%!important}
+    footer{padding:8px 20px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-shrink:0}
+    .btn{cursor:pointer;border:none;border-radius:4px;padding:6px 16px;font-family:inherit;font-size:.82rem;font-weight:600;background:#38bdf8;color:#0f172a}
+    .btn:hover{filter:brightness(1.15)}
+  </style>
+</head><body>
+  <header>
+    <div><h1>&#128202; ${runName}</h1>
+    <div class="meta">Node: ${nodeId}&nbsp;&nbsp;|&nbsp;&nbsp;${nSamp} samples&nbsp;&nbsp;|&nbsp;&nbsp;${nChan} channels</div></div>
+  </header>
+  <div class="controls" id="ch"></div>
+  <div class="chart-wrap"><canvas id="c"></canvas></div>
+  <footer>
+    <button class="btn" onclick="dl()">&#8595; Download CSV</button>
+  </footer>
+  <script>
+    const cfg = ${chartCfg};
+    const csv = ${eCsv};
+    const name = ${eName};
+    const chart = new Chart(document.getElementById('c').getContext('2d'), {
+      type: 'line', data: cfg,
+      options: {
+        animation: false, responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 14, color: '#94a3b8', font: { family: 'ui-monospace', size: 10 } }, grid: { color: '#1e293b' } },
+          y: { ticks: { color: '#94a3b8', font: { family: 'ui-monospace', size: 10 } }, grid: { color: '#334155' } }
+        }
+      }
+    });
+    cfg.datasets.forEach((ds, i) => {
+      const b = document.createElement('button');
+      b.className = 'ch-btn'; b.textContent = ds.label;
+      b.style.borderColor = ds.borderColor; b.style.color = ds.borderColor;
+      b.addEventListener('click', () => {
+        const hidden = !chart.data.datasets[i].hidden;
+        chart.data.datasets[i].hidden = hidden;
+        b.classList.toggle('hidden-ch', hidden);
+        chart.update('none');
+      });
+      document.getElementById('ch').appendChild(b);
+    });
+    function dl() {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = name + '.csv'; a.click(); URL.revokeObjectURL(a.href);
+    }
+  <\/script>
+</body></html>`;
+      },
+
+      // ── Data tab helpers ──────────────────────────────────────
+      async dataFetchNodes() {
+        try {
+          const res  = await fetch(`http://${location.hostname}:5000/data`);
+          const data = await res.json();
+          this.dataNodeList = data.clients || [];
+          if (this.dataNodeList.length === 1 && !this.dataNodeId)
+            this.dataNodeId = this.dataNodeList[0];
+          if (this.dataNodeId) this.dataFetchRuns();
+        } catch (e) { this.dataFlash = 'REST server unreachable: ' + e.message; }
+      },
+
+      async dataFetchRuns() {
+        if (!this.dataNodeId) return;
+        try {
+          const res  = await fetch(`http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}`);
+          const data = await res.json();
+          this.dataRuns  = data.files || [];
+          this.dataFlash = this.dataRuns.length ? '' : `No runs stored for ${this.dataNodeId} this session.`;
+        } catch (e) { this.dataFlash = 'Error: ' + e.message; }
+      },
+
+      async dataOpenPlot(tag) {
+        try {
+          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}?experimentName=${encodeURIComponent(tag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(this.dataNodeId, tag, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) { this.dataFlash = 'Error: ' + e.message; }
+      },
+
+      async dataDownload(tag) {
+        try {
+          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}?experimentName=${encodeURIComponent(tag)}`;
+          const res  = await fetch(url);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          let content, filename, mime;
+          if (data.format === 'csv') {
+            content = data.csv; filename = `${this.dataNodeId}_${tag}.csv`; mime = 'text/csv';
+          } else {
+            content = JSON.stringify(data.data, null, 2); filename = `${this.dataNodeId}_${tag}.json`; mime = 'application/json';
+          }
+          const blob = new Blob([content], { type: mime });
+          const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href);
+          this.dataFlash = `Downloaded ${filename}`;
+          setTimeout(() => { this.dataFlash = ''; }, 3000);
+        } catch (e) { this.dataFlash = 'Error: ' + e.message; }
       },
 
       // ══════════════════════════════════════════════════════════

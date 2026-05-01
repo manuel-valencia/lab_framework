@@ -167,6 +167,22 @@ def receive_data(clientID):
 
 #----------------------------------------------------------
 
+@app.route('/data', methods=['GET'])
+def list_clients():
+    """
+    Lists all client IDs that have stored data in this session.
+    Returns: {"clients": ["carriageNode", ...]}
+    """
+    if not os.path.isdir(TEMP_DIR):
+        return jsonify({"clients": []}), 200
+    clients = sorted([
+        d for d in os.listdir(TEMP_DIR)
+        if os.path.isdir(os.path.join(TEMP_DIR, d))
+    ])
+    return jsonify({"clients": clients}), 200
+
+#----------------------------------------------------------
+
 @app.route('/data/<clientID>', methods=['GET'])
 def retrieve_data(clientID):
     """
@@ -215,10 +231,26 @@ def retrieve_data(clientID):
             return jsonify({"error": f"No files available for client '{clientID}'"}), 404
         filePath = fileList[0]
     else:
-        # Otherwise, require experimentName
+        # Otherwise, require experimentName or return a listing of available runs
         experimentTag = request.args.get("experimentName")
         if not experimentTag:
-            return jsonify({"error": "Missing 'experimentName' or 'latest=true'"}), 400
+            fileList = sorted(
+                glob.glob(os.path.join(clientDir, "*.*")),
+                key=os.path.getmtime,
+                reverse=True
+            )
+            files = []
+            for fp in fileList:
+                basename = os.path.basename(fp)
+                tag, ext = os.path.splitext(basename)
+                stat = os.stat(fp)
+                files.append({
+                    "tag":      tag,
+                    "ext":      ext.lstrip('.'),
+                    "modified": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                    "size_kb":  round(stat.st_size / 1024, 1)
+                })
+            return jsonify({"clientID": clientID, "files": files}), 200
 
         # Determine format
         requestedFormat = request.args.get("format", "").lower()
