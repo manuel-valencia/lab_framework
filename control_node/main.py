@@ -51,7 +51,7 @@ def setup_logging(log_dir: str) -> logging.Logger:
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
-    sh = logging.StreamHandler(sys.stdout)
+    sh = logging.StreamHandler(open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1, closefd=False))
     sh.setFormatter(fmt)
     logger.addHandler(sh)
 
