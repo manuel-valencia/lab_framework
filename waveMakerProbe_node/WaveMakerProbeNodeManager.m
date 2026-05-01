@@ -84,6 +84,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
         % Hardware
         daqSession          % NI-DAQ session object
         paddleChannel       % output channel ID (from config)
+        streamListener      % logical flag: true when ScansAvailableFcn is active
     end
 
     methods
@@ -105,6 +106,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.signalType   = 'sinusoidal';
             obj.signalParams = struct();
             obj.allPaddleSignals = {};
+            obj.streamListener = false;
 
             nodeDir = fileparts(mfilename('fullpath'));
             obj.logDir = fullfile(nodeDir, 'waveMakerProbeNodeLogs');
@@ -552,16 +554,13 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 end
 
                 blockSize = 5;
-                % Start DAQ in background once so the session stays running.
-                % streamOneBlock then calls read() which is non-blocking (pulls from
-                % the live buffer), keeping the MATLAB thread free for MQTT messages.
                 zeroBuf = zeros(obj.sampleRate, 1);   % 1-second zero output (repeats)
                 preload(obj.daqSession, zeroBuf);
+                obj.daqSession.ScansAvailableFcnCount = blockSize;
+                obj.daqSession.ScansAvailableFcn = @(src, ~) obj.onProbeDataAvailable(src, blockSize);
+                obj.streamListener = true;
                 start(obj.daqSession, "repeatoutput");
-                t = timer('ExecutionMode', 'fixedRate', 'Period', 0.1, 'BusyMode', 'drop', ...
-                           'TimerFcn', @(~,~) obj.streamOneBlock(blockSize));
-                obj.log("INFO", "Probe stream timer started (period=0.1 s, 5-scan blocks). Send Reset to stop.");
-                start(t);
+                obj.log("INFO", "Probe stream started (ScansAvailableFcn, 5-scan blocks). Send Reset to stop.");
 
             else  % actuator
                 p = cmd.params;
@@ -895,6 +894,29 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             end
         end
 
+        function onProbeDataAvailable(obj, src, blockSize)
+            % onProbeDataAvailable — ScansAvailableFcn callback during TESTINGSENSOR.
+            % Called by NI-DAQ when blockSize scans are ready in the hardware buffer.
+            if obj.state ~= State.TESTINGSENSOR
+                obj.teardownStreamListener();
+                try; stop(src); catch; end
+                return;
+            end
+            try
+                rawRead = read(src, blockSize);
+                rawArr  = mean(rawRead.Variables, 1);   % 1x8 mean
+                heights = rawArr .* obj.probeGains;
+                reading = struct('type','wave_height','units','m', ...
+                    'timestamp', string(datetime('now','Format','yyyy-MM-dd HH:mm:ss.SSS')));
+                for k = obj.activeProbes(:)'
+                    reading.(sprintf('H%d', k)) = heights(k);
+                end
+                obj.comm.commPublish(obj.comm.getFullTopic("data"), jsonencode(reading));
+            catch ME
+                obj.log("WARN", sprintf("onProbeDataAvailable error: %s", ME.message));
+            end
+        end
+
         function finishActuatorTest(obj)
             % finishActuatorTest — called by singleShot timer after actuator test duration.
             try; stop(obj.daqSession); write(obj.daqSession, 0); catch; end  % best-effort stop+zero
@@ -1008,6 +1030,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.isCollecting = false;
             obj.isGenerating = false;
             obj.log("INFO", "stopHardware: halting DAQ and zeroing paddle output.");
+            obj.teardownStreamListener();
             try
                 stop(obj.daqSession);
                     flush(obj.daqSession);        % discard any unread background scans
@@ -1022,6 +1045,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.isGenerating   = false;
             obj.experimentData = [];
             obj.log("INFO", "shutdownHardware: releasing DAQ resources.");
+            obj.teardownStreamListener();
             try
                 stop(obj.daqSession);
                     flush(obj.daqSession);        % discard any unread background scans
@@ -1142,6 +1166,16 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             end
 
             try; stop(obj.daqSession); write(obj.daqSession, 0); catch; end
+        end
+
+        function teardownStreamListener(obj)
+            % teardownStreamListener — clear ScansAvailableFcn and reset flag.
+            try
+                if ~isempty(obj.daqSession) && isvalid(obj.daqSession)
+                    obj.daqSession.ScansAvailableFcn = [];
+                end
+            catch; end
+            obj.streamListener = false;
         end
 
     end
