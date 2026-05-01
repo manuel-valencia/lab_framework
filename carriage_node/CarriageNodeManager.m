@@ -325,12 +325,12 @@ classdef CarriageNodeManager < ExperimentManager
             bias      = obj.biasVoltages;
             blockSize = 5;   % fire every 5 scans → 10 Hz at 50 Hz sample rate
 
-            % Use DataAvailable event: hardware pushes evt.Data when
-            % NotifyWhenDataAvailableExceeds samples are buffered.
+            % Use ScansAvailableFcn: hardware pushes evt.Data when
+            % ScansAvailableFcnCount samples are buffered.
             % No read() call in the callback — eliminates re-entrancy.
-            obj.daqSession.NotifyWhenDataAvailableExceeds = blockSize;
-            obj.streamListener = addlistener(obj.daqSession, 'DataAvailable', ...
-                @(~, evt) obj.onDataAvailableTest(evt, bias));
+            obj.daqSession.ScansAvailableFcnCount = blockSize;
+            obj.daqSession.ScansAvailableFcn = @(~, evt) obj.onDataAvailableTest(evt, bias);
+            obj.streamListener = true;   % flag: listener is active
 
             try
                 start(obj.daqSession, "continuous");
@@ -350,7 +350,7 @@ classdef CarriageNodeManager < ExperimentManager
                 return;
             end
             try
-                rawArr       = mean(evt.Data{:,:}, 1);   % mean block → 1x10
+                rawArr       = mean(evt.Data, 1);   % mean block → 1x10  (nScans × nCh matrix)
                 SG_corrected = rawArr(1:6) - bias;
                 FT           = obj.runTimeMatrix * SG_corrected';
                 reading = struct( ...
@@ -597,13 +597,15 @@ classdef CarriageNodeManager < ExperimentManager
     methods (Access = private)
 
         function teardownStreamListener(obj)
-            % teardownStreamListener — safely delete the DataAvailable listener.
+            % teardownStreamListener — clear the ScansAvailableFcn callback.
             % Must be called before stop()/delete() on the DAQ session to avoid
             % 'Invalid or deleted object' warnings from orphaned callbacks.
-            if ~isempty(obj.streamListener) && isvalid(obj.streamListener)
-                delete(obj.streamListener);
-            end
-            obj.streamListener = [];
+            try
+                if ~isempty(obj.daqSession) && isvalid(obj.daqSession)
+                    obj.daqSession.ScansAvailableFcn = [];
+                end
+            catch; end
+            obj.streamListener = false;
         end
 
     end
