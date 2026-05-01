@@ -43,6 +43,7 @@ classdef (Abstract) ExperimentManager < handle
         cmd                         % Command string for current operation
         logDir                      % Folder path for commLog / fsmLog output
         abortRequested logical = false % Set true when Abort command is received
+        prevState   State           % State before the most recent transition (used by subclasses for recovery logic)
         fsmFlushIdx  double = 0    % Number of FSMLog entries already flushed
         commFlushIdx double = 0    % Number of comm.messageLog entries already flushed
 
@@ -616,6 +617,7 @@ classdef (Abstract) ExperimentManager < handle
                 return;
             end
             prev = obj.state;
+            obj.prevState = prev;   % record for subclass recovery (e.g. DAQ reinit after ERROR)
             obj.exitState(prev);
             obj.state = newState;
             obj.history(end+1) = string(newState);

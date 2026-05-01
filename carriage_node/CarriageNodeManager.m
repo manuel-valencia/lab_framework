@@ -308,6 +308,23 @@ classdef CarriageNodeManager < ExperimentManager
             % state leaves TESTINGSENSOR (set by the incoming Reset).
 
             obj.log("INFO", "handleTest: collecting fresh force bias before streaming...");
+
+            % Tear down any running stream timer and stop the DAQ before the
+            % blocking read() in collectForceBias. Without this, a stale timer
+            % tick can fire via drawnow() during the read(), causing a second
+            % concurrent read() on the same NI session → Timeout error.
+            tList = timerfindall('Tag', 'CarriageSensorStreamTimer');
+            for k = 1:numel(tList)
+                try; stop(tList(k)); catch; end
+                try; delete(tList(k)); catch; end
+            end
+            try
+                if obj.daqSession.Running
+                    stop(obj.daqSession);
+                end
+            catch; end
+            pause(0.1);   % let NI hardware fully flush and go idle
+
             obj.collectForceBias();
             obj.log("INFO", "handleTest: starting sensor stream timer. Send Reset to stop.");
 
@@ -355,6 +372,8 @@ classdef CarriageNodeManager < ExperimentManager
                 return;
             end
             try
+                % Guard: skip read if DAQ was stopped between timer fire and execution
+                if ~obj.daqSession.Running; return; end
                 rawRead = read(obj.daqSession, blockSize);
                 rawArr  = mean(table2array(rawRead), 1);   % mean over block → 1x10
                 SG_corrected = rawArr(1:6) - bias;
@@ -527,6 +546,11 @@ classdef CarriageNodeManager < ExperimentManager
             % Called automatically before every Test and Run, and by handleCalibrate
             % when target == "force_bias".
             obj.log("INFO", "collectForceBias: reading 1 s with test body attached...");
+            % Ensure DAQ is stopped before a blocking read() — a running
+            % continuous session would otherwise cause a re-entrancy conflict.
+            try
+                if obj.daqSession.Running; stop(obj.daqSession); end
+            catch; end
             biasData         = read(obj.daqSession, seconds(1));
             biasArr          = mean(table2array(biasData), 1);  % 1x10 mean voltages
             obj.biasVoltages = biasArr(1:6);                    % cols 1-6 = SG0-SG5
@@ -574,6 +598,22 @@ classdef CarriageNodeManager < ExperimentManager
                 end
             catch ME
                 obj.log("WARN", sprintf("stopHardware DAQ stop error: %s", ME.message));
+            end
+
+            % If recovering from an ERROR state, the NI hardware buffers may be
+            % corrupt from a re-entrant read() timeout. A plain stop() is not
+            % sufficient — delete and recreate the entire session to fully reset
+            % the driver state so the next Test/Run can read cleanly.
+            if obj.prevState == State.ERROR
+                try
+                    delete(obj.daqSession);
+                catch; end
+                try
+                    obj.initializeHardware(obj.cfg);
+                    obj.log("INFO", "stopHardware: DAQ session recreated after ERROR recovery.");
+                catch ME
+                    obj.log("ERROR", sprintf("stopHardware: DAQ reinit failed: %s", ME.message));
+                end
             end
         end
 
