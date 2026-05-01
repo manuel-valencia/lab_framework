@@ -325,10 +325,10 @@
         <div class="card">
           <div class="card-title">Broadcast to all nodes</div>
           <div class="cmd-list">
-            <template x-for="cmd in ['Reset','Shutdown','Update']" :key="cmd">
+            <template x-for="bc in [{label:'Reset',cmd:'Reset'},{label:'Shutdown',cmd:'Abort'},{label:'Update',cmd:'Update'}]" :key="bc.label">
               <button class="btn btn-danger"
-                      @click="broadcastCmd({cmd})"
-                      x-text="'⚠ '+cmd+' ALL'"></button>
+                      @click="broadcastCmd({cmd: bc.cmd})"
+                      x-text="'⚠ '+bc.label+' ALL'"></button>
             </template>
           </div>
           <div class="flash mt" :class="{err: broadcastFlash.startsWith('Error')}" x-text="broadcastFlash"></div>
@@ -648,15 +648,19 @@
       },
 
       async broadcastCmd(body) {
-        const ids = Object.keys(this.nodes);
-        if (ids.length === 0) { this.broadcastFlash = 'No nodes known'; return; }
-        let sent = 0;
-        for (const id of ids) {
-          await this.sendCmd(id, body).catch(() => {});
-          sent++;
+        try {
+          const res = await fetch('/api/broadcast', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          this.broadcastFlash = `Broadcast '${body.cmd}' → controlNode/cmd`;
+          setTimeout(() => { this.broadcastFlash = ''; }, 4000);
+        } catch (e) {
+          this.broadcastFlash = 'Error: ' + e.message;
         }
-        this.broadcastFlash = `Broadcast '${body.cmd}' to ${sent} nodes`;
-        setTimeout(() => { this.broadcastFlash = ''; }, 4000);
       },
 
       publishRaw() {

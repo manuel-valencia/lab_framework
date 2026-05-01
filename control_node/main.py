@@ -212,6 +212,15 @@ class ControlNode:
             self.send_command(node_id, body)
             return jsonify({"status": "sent", "node": node_id, "cmd": body["cmd"]})
 
+        @web.route("/api/broadcast", methods=["POST"])
+        def api_broadcast():
+            body = request.get_json(silent=True)
+            if not body or "cmd" not in body:
+                return jsonify({"error": "Request body must be JSON with a 'cmd' field"}), 400
+            self.comm.comm_publish("controlNode/cmd", json.dumps(body))
+            self.logger.info("Broadcast via controlNode/cmd: %s", body.get("cmd"))
+            return jsonify({"status": "broadcast", "cmd": body["cmd"]})
+
         port = self.cfg.get("webPort", 8080)
         t = threading.Thread(
             target=lambda: web.run(host="0.0.0.0", port=port,
