@@ -556,6 +556,11 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.log("INFO", sprintf("handleTest: target=%s.", target));
 
             if target == "sensor"
+                % Allow the webapp to pass activeProbes directly in the Test command,
+                % so the user can start a sensor test without a prior Configure cycle.
+                if isfield(cmd.params, 'activeProbes') && ~isempty(cmd.params.activeProbes)
+                    obj.setActiveProbes(cmd.params.activeProbes);
+                end
                 if isempty(obj.activeProbes)
                     obj.log("WARN", "handleTest (sensor): no activeProbes set. Send Configure first.");
                     obj.transition(State.IDLE);
@@ -1087,6 +1092,19 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
     end
 
     methods (Access = protected)
+
+        function enterIdle(obj)
+            % enterIdle override — clear calibration scratch data on IDLE entry.
+            % Fires on Reset, on the < 2 points abort, and on successful finish.
+            % probeGains is intentionally NOT cleared — only the per-session scratch.
+            if ~isempty(obj.calibHeights_m) || ~isempty(obj.calibSelectedProbes)
+                obj.log("INFO", "Clearing calibration scratch data on IDLE entry.");
+                obj.calibSelectedProbes = [];
+                obj.calibHeights_m      = [];
+                obj.calibVoltages       = [];
+            end
+            enterIdle@ExperimentManager(obj);
+        end
 
         function ready = awaitReady(obj, sc)
             % awaitReady — wave-probe readiness check.

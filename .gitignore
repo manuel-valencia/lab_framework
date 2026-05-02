@@ -37,6 +37,7 @@ Desktop.ini
 
 # === MATLAB artifacts ===
 *.asv
+**/probe_gains*.mat
 
 # === Data files (test data, experiments, etc.) ===
 *.csv

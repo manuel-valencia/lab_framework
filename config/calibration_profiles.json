@@ -75,6 +75,7 @@
           }
         ],
         "minPoints": 3,
+        "hardMinPoints": 2,
         "pointCommandTemplate": {
           "cmd": "Calibrate",
           "params": {}
