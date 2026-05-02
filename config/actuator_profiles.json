@@ -1,0 +1,218 @@
+{
+  "waveMakerProbeNode": {
+    "label": "Wave Maker Probe Node — Actuator Test",
+    "signalTypes": [
+      {
+        "id": "sinusoidal",
+        "label": "Sinusoidal",
+        "fields": [
+          {
+            "key": "activeProbes",
+            "type": "int_array",
+            "label": "Active probes",
+            "placeholder": "e.g. 1,3,5",
+            "required": true
+          },
+          {
+            "key": "duration",
+            "type": "number",
+            "label": "Duration",
+            "unit": "s",
+            "default": 30,
+            "min": 1,
+            "required": true
+          },
+          {
+            "key": "amplitude",
+            "type": "number",
+            "label": "Amplitude (wave height)",
+            "unit": "m",
+            "default": 0.02,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "frequency",
+            "type": "number",
+            "label": "Frequency",
+            "unit": "Hz",
+            "default": 0.5,
+            "min": 0,
+            "required": true
+          }
+        ]
+      },
+      {
+        "id": "bretschneider",
+        "label": "Bretschneider (irregular)",
+        "fields": [
+          {
+            "key": "activeProbes",
+            "type": "int_array",
+            "label": "Active probes",
+            "placeholder": "e.g. 1,3,5",
+            "required": true
+          },
+          {
+            "key": "duration",
+            "type": "number",
+            "label": "Duration",
+            "unit": "s",
+            "default": 120,
+            "min": 1,
+            "required": true
+          },
+          {
+            "key": "significantWaveHeight_m",
+            "type": "number",
+            "label": "Significant wave height (Hs)",
+            "unit": "m",
+            "default": 0.04,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "modalFrequency_radps",
+            "type": "number",
+            "label": "Modal frequency (ωm)",
+            "unit": "rad/s",
+            "default": 3.14,
+            "min": 0,
+            "required": true
+          }
+        ]
+      },
+      {
+        "id": "pulse_sinusoidal",
+        "label": "Pulse Sinusoidal",
+        "fields": [
+          {
+            "key": "activeProbes",
+            "type": "int_array",
+            "label": "Active probes",
+            "placeholder": "e.g. 1,3,5",
+            "required": true
+          },
+          {
+            "key": "duration",
+            "type": "number",
+            "label": "Duration",
+            "unit": "s",
+            "default": 30,
+            "min": 1,
+            "required": true
+          },
+          {
+            "key": "amplitude",
+            "type": "number",
+            "label": "Amplitude (wave height)",
+            "unit": "m",
+            "default": 0.02,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "frequency",
+            "type": "number",
+            "label": "Frequency",
+            "unit": "Hz",
+            "default": 0.5,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "numPulses",
+            "type": "int",
+            "label": "Number of pulses",
+            "default": 5,
+            "min": 1,
+            "required": true
+          }
+        ]
+      },
+      {
+        "id": "dual_pulse",
+        "label": "Dual Pulse",
+        "fields": [
+          {
+            "key": "activeProbes",
+            "type": "int_array",
+            "label": "Active probes",
+            "placeholder": "e.g. 1,3,5",
+            "required": true
+          },
+          {
+            "key": "duration",
+            "type": "number",
+            "label": "Duration",
+            "unit": "s",
+            "default": 60,
+            "min": 1,
+            "required": true
+          },
+          {
+            "key": "amplitude1_m",
+            "type": "number",
+            "label": "Pulse 1 amplitude",
+            "unit": "m",
+            "default": 0.02,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "frequency1_Hz",
+            "type": "number",
+            "label": "Pulse 1 frequency",
+            "unit": "Hz",
+            "default": 0.5,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "numPulses1",
+            "type": "int",
+            "label": "Pulse 1 count",
+            "default": 5,
+            "min": 1,
+            "required": true
+          },
+          {
+            "key": "wavePauseDuration_s",
+            "type": "number",
+            "label": "Pause between pulses",
+            "unit": "s",
+            "default": 5,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "amplitude2_m",
+            "type": "number",
+            "label": "Pulse 2 amplitude",
+            "unit": "m",
+            "default": 0.02,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "frequency2_Hz",
+            "type": "number",
+            "label": "Pulse 2 frequency",
+            "unit": "Hz",
+            "default": 0.5,
+            "min": 0,
+            "required": true
+          },
+          {
+            "key": "numPulses2",
+            "type": "int",
+            "label": "Pulse 2 count",
+            "default": 5,
+            "min": 1,
+            "required": true
+          }
+        ]
+      }
+    ]
+  }
+}

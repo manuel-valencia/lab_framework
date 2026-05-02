@@ -204,6 +204,14 @@ class ControlNode:
             with open(profiles_path) as f:
                 return jsonify(json.load(f))
 
+        @web.route("/api/actuator-profiles")
+        def api_actuator_profiles():
+            profiles_path = os.path.join(REPO_ROOT, "config", "actuator_profiles.json")
+            if not os.path.isfile(profiles_path):
+                return jsonify({}), 404
+            with open(profiles_path) as f:
+                return jsonify(json.load(f))
+
         @web.route("/api/command/<node_id>", methods=["POST"])
         def api_command(node_id):
             body = request.get_json(silent=True)

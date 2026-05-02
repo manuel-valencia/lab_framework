@@ -230,7 +230,7 @@
                 <button class="btn"
                         :class="cmdButtonClass(item.label)"
                         :disabled="!cmdTarget || (item.action === 'calibrate' && calibWizard.active)"
-                        @click="item.action === 'calibrate' ? startCalibration(cmdTarget) : item.action === 'testSensor' ? startTestSensor(cmdTarget) : sendCmd(cmdTarget, item.payload)"
+                        @click="item.action === 'calibrate' ? startCalibration(cmdTarget) : item.action === 'testSensor' ? startTestSensor(cmdTarget) : item.action === 'testActuator' ? startTestActuator(cmdTarget) : sendCmd(cmdTarget, item.payload)"
                         x-text="item.label"></button>
               </template>
             </div>
@@ -249,6 +249,60 @@
             <div style="display:flex;gap:8px;margin-top:8px">
               <button class="btn btn-primary" style="flex:1" @click="submitTestSensor()">Start TestSensor</button>
               <button class="btn btn-secondary" @click="testSensorActive=false">Cancel</button>
+            </div>
+          </div>
+
+          <!-- TestActuator — config form -->
+          <div x-show="testActuatorActive && !testActuatorPending && cmdTarget"
+               style="margin-top:10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:.8rem">
+            <div style="margin-bottom:8px;font-weight:600;color:var(--fg)">Configure Actuator Test</div>
+
+            <div class="form-row" style="margin-bottom:6px">
+              <label style="font-size:.78rem">Signal type</label>
+              <select x-model="testActuatorSignalType"
+                      @change="onTestActuatorSignalTypeChange()"
+                      style="font-size:.78rem;padding:3px 6px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                <template x-for="st in getTestActuatorSignalTypes()" :key="st.id">
+                  <option :value="st.id" x-text="st.label"></option>
+                </template>
+              </select>
+            </div>
+
+            <template x-for="field in getTestActuatorFields()" :key="field.key">
+              <div style="margin-bottom:5px">
+                <div style="color:var(--muted);margin-bottom:2px;font-size:.76rem"
+                     x-text="field.label + (field.unit ? ' (' + field.unit + ')' : '') + (field.required ? ' *' : '')"></div>
+                <input :type="field.type === 'int_array' ? 'text' : 'number'"
+                       :placeholder="field.placeholder || (field.default !== undefined ? String(field.default) : '')"
+                       :step="field.type === 'int' ? '1' : 'any'"
+                       :min="field.min !== undefined ? field.min : undefined"
+                       x-model="testActuatorFormValues[field.key]"
+                       style="width:100%;box-sizing:border-box;padding:4px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:.78rem" />
+              </div>
+            </template>
+
+            <div x-show="testActuatorFormError" x-text="testActuatorFormError"
+                 style="color:#f87171;font-size:.75rem;margin-top:4px"></div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="btn btn-primary" style="flex:1" @click="submitTestActuator()">Configure &amp; Preview</button>
+              <button class="btn btn-secondary" @click="cancelTestActuator()">Cancel</button>
+            </div>
+          </div>
+
+          <!-- TestActuator — CONFIGUREPENDING confirm panel -->
+          <div x-show="testActuatorPending && cmdTarget"
+               style="margin-top:10px;padding:10px;background:#1a1f2e;border:1px solid #3b4a6b;border-radius:6px;font-size:.8rem">
+            <div style="color:#93c5fd;font-weight:600;margin-bottom:6px">&#9881; Signal computed — awaiting confirmation</div>
+            <div style="color:var(--muted);font-size:.76rem;margin-bottom:8px">
+              Review the preview plot before running the actuator.
+            </div>
+            <button class="btn btn-secondary" style="width:100%;margin-bottom:6px;font-size:.78rem"
+                    @click="openActuatorPreview()">Open Signal Preview</button>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-primary" style="flex:1;font-size:.78rem"
+                      @click="confirmActuatorTest()">Run Actuator Test</button>
+              <button class="btn btn-danger" style="flex:1;font-size:.78rem"
+                      @click="cancelActuatorTest()">Cancel</button>
             </div>
           </div>
 
@@ -700,7 +754,15 @@
       cmdFlash: '',
       testSensorActive: false,
       testSensorProbeInput: '',
-      broadcastFlash: ''
+      // TestActuator wizard
+      actuatorProfiles: {},
+      testActuatorActive: false,
+      testActuatorPending: false,
+      testActuatorNodeId: '',
+      testActuatorSignalType: '',
+      testActuatorFormValues: {},
+      testActuatorFormError: '',
+      broadcastFlash: '',
       rawTopic: '',
       rawPayload: '',
       rawFlash: '',
@@ -873,6 +935,15 @@
             this.expDataAvailable = true;
             this.expFlash = 'Run complete — data ready.';
             setTimeout(() => { this.expFlash = ''; }, 6000);
+          }
+          // TestActuator: watch for CONFIGUREPENDING / IDLE / ERROR to drive wizard state
+          if (!isHeartbeat && this.testActuatorActive && nodeId === this.testActuatorNodeId) {
+            if (msg.state === 'CONFIGUREPENDING') {
+              this.testActuatorPending = true;
+            } else if (['IDLE', 'ERROR'].includes(msg.state) && this.testActuatorPending) {
+              this.testActuatorPending = false;
+              this.testActuatorActive = false;
+            }
           }
         }
 
@@ -1489,7 +1560,7 @@
           items.push({ label: 'TestSensor', action: 'testSensor' });
         }
         if (n && n.hasActuator) {
-          items.push({ label: 'TestActuator', payload: { cmd: 'Test', params: { target: 'actuator' } } });
+          items.push({ label: 'TestActuator', action: 'testActuator' });
         }
         items.push({ label: 'Reset',  payload: { cmd: 'Reset'  } });
         items.push({ label: 'Update', payload: { cmd: 'Update' } });
@@ -1990,6 +2061,149 @@
         try { return JSON.parse(str); }
         catch { return str; }
       },
+
+      // ══════════════════════════════════════════════════════════
+      //  TestActuator wizard
+      // ══════════════════════════════════════════════════════════
+      async startTestActuator(nodeId) {
+        if (!nodeId) { this.cmdFlash = 'Error: no node selected'; return; }
+
+        // Lazy-load actuator profiles
+        if (!Object.keys(this.actuatorProfiles).length) {
+          try {
+            const res = await fetch('/api/actuator-profiles');
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            this.actuatorProfiles = await res.json();
+          } catch (e) {
+            this.cmdFlash = 'Error: could not load actuator profiles — ' + e.message;
+            return;
+          }
+        }
+
+        const profile = this.actuatorProfiles[nodeId];
+        if (!profile || !profile.signalTypes || !profile.signalTypes.length) {
+          this.cmdFlash = `No actuator profile defined for ${nodeId}`;
+          return;
+        }
+
+        this.testActuatorNodeId = nodeId;
+        this.testActuatorActive = true;
+        this.testActuatorPending = false;
+        this.testActuatorFormError = '';
+        this.testActuatorSignalType = profile.signalTypes[0].id;
+        this._initActuatorFormDefaults();
+      },
+
+      _initActuatorFormDefaults() {
+        const fields = this.getTestActuatorFields();
+        const vals = {};
+        for (const f of fields) {
+          vals[f.key] = f.default !== undefined ? String(f.default) : '';
+        }
+        this.testActuatorFormValues = vals;
+      },
+
+      onTestActuatorSignalTypeChange() {
+        this.testActuatorFormError = '';
+        this._initActuatorFormDefaults();
+      },
+
+      getTestActuatorSignalTypes() {
+        const profile = this.actuatorProfiles[this.testActuatorNodeId];
+        return profile ? profile.signalTypes : [];
+      },
+
+      getTestActuatorFields() {
+        const profile = this.actuatorProfiles[this.testActuatorNodeId];
+        if (!profile) return [];
+        const st = profile.signalTypes.find(s => s.id === this.testActuatorSignalType);
+        return st ? st.fields : [];
+      },
+
+      submitTestActuator() {
+        this.testActuatorFormError = '';
+        const fields = this.getTestActuatorFields();
+        const params = { target: 'actuator', signalType: this.testActuatorSignalType };
+
+        for (const f of fields) {
+          const raw = (this.testActuatorFormValues[f.key] || '').trim();
+          if (f.required && !raw) {
+            this.testActuatorFormError = `"${f.label}" is required.`;
+            return;
+          }
+          if (!raw) continue;
+
+          if (f.type === 'int_array') {
+            const arr = raw.split(',').map(s => parseInt(s.trim(), 10));
+            if (arr.some(isNaN)) {
+              this.testActuatorFormError = `"${f.label}" must be comma-separated integers.`;
+              return;
+            }
+            params[f.key] = arr;
+          } else if (f.type === 'int') {
+            const v = parseInt(raw, 10);
+            if (isNaN(v) || v < (f.min ?? -Infinity)) {
+              this.testActuatorFormError = `"${f.label}" must be an integer${f.min !== undefined ? ' ≥ ' + f.min : ''}.`;
+              return;
+            }
+            params[f.key] = v;
+          } else {
+            const v = parseFloat(raw);
+            if (isNaN(v) || v < (f.min ?? -Infinity)) {
+              this.testActuatorFormError = `"${f.label}" must be a number${f.min !== undefined ? ' ≥ ' + f.min : ''}.`;
+              return;
+            }
+            params[f.key] = v;
+          }
+        }
+
+        this.sendCmd(this.testActuatorNodeId, { cmd: 'Test', params });
+        // panel stays open; MQTT hook will flip testActuatorPending when CONFIGUREPENDING arrives
+      },
+
+      cancelTestActuator() {
+        this.testActuatorActive = false;
+        this.testActuatorPending = false;
+        this.testActuatorFormError = '';
+      },
+
+      async openActuatorPreview() {
+        const nodeId = this.testActuatorNodeId;
+        try {
+          const listRes = await fetch(`http://${location.hostname}:5000/data/${encodeURIComponent(nodeId)}`);
+          if (!listRes.ok) throw new Error('HTTP ' + listRes.status);
+          const listing = await listRes.json();
+          const files = listing.files || [];
+          // Find most recent file whose tag starts with 'preview_'
+          const previewFile = files.find(f => f.tag.startsWith('preview_') || f.fileTag.startsWith('preview_'));
+          if (!previewFile) {
+            this.cmdFlash = 'No preview data available yet — node may still be computing.';
+            return;
+          }
+          const tag = previewFile.fileTag || previewFile.tag;
+          const dataRes = await fetch(`http://${location.hostname}:5000/data/${encodeURIComponent(nodeId)}?experimentName=${encodeURIComponent(tag)}`);
+          if (!dataRes.ok) throw new Error('HTTP ' + dataRes.status);
+          const resp = await dataRes.json();
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(nodeId, tag, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) {
+          this.cmdFlash = 'Error loading preview: ' + e.message;
+        }
+      },
+
+      confirmActuatorTest() {
+        this.sendCmd(this.testActuatorNodeId, { cmd: 'TestValid' });
+        this.testActuatorPending = false;
+        this.testActuatorActive = false;
+      },
+
+      cancelActuatorTest() {
+        this.sendCmd(this.testActuatorNodeId, { cmd: 'Reset' });
+        this.testActuatorPending = false;
+        this.testActuatorActive = false;
+      },
+
     };
   }
   </script>
