@@ -553,6 +553,39 @@
 
         <div class="flash mt" :class="{err: dataFlash.startsWith('Error')}" x-text="dataFlash"></div>
       </div>
+
+      <!-- Fetch by name — direct lookup for any node/run (including past sessions) -->
+      <div class="card" style="max-width:900px;margin-top:14px">
+        <div class="card-title">Fetch run by name</div>
+        <p style="font-size:.8rem;color:var(--muted);margin-bottom:10px">
+          Retrieve a specific run directly by node ID and experiment name — useful for runs not shown in the session browser above.
+        </p>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+          <div style="flex:1;min-width:140px">
+            <label>Node ID</label>
+            <input type="text" x-model="dataSearchNode" placeholder="e.g. carriageNode"
+                   @keyup.enter="dataSearch()" />
+          </div>
+          <div style="flex:2;min-width:180px">
+            <label>Experiment name (tag)</label>
+            <input type="text" x-model="dataSearchTag" placeholder="e.g. force_run_001"
+                   @keyup.enter="dataSearch()" />
+          </div>
+          <button class="btn btn-primary" @click="dataSearch()">Get</button>
+        </div>
+
+        <div x-show="dataSearchStatus"
+             style="font-size:.82rem;margin-bottom:8px"
+             :style="dataSearchStatus.startsWith('Error') ? 'color:#fca5a5' : 'color:#86efac'"
+             x-text="dataSearchStatus"></div>
+
+        <div x-show="dataSearchResult" style="display:flex;gap:8px">
+          <button class="btn btn-secondary" style="padding:4px 14px;font-size:.8rem"
+                  @click="dataSearchPlot()">&#128202; Plot</button>
+          <button class="btn btn-secondary" style="padding:4px 14px;font-size:.8rem"
+                  @click="dataSearchDownload()">&#8595; Download CSV</button>
+        </div>
+      </div>
     </div>
 
     <!-- ════════════════ LOG TAB ════════════════════════════════ -->
@@ -665,6 +698,12 @@
       dataNodeList: [],
       dataRuns:     [],
       dataFlash:    '',
+
+      // Data tab — search by name (non-session or direct lookup)
+      dataSearchNode:   '',
+      dataSearchTag:    '',
+      dataSearchResult: null,
+      dataSearchStatus: '',
 
       // ── Log tab ────────────────────────────────────────────────
       logLines: [],       // [{level, text}]
@@ -945,9 +984,10 @@
 
         const chartCfg   = JSON.stringify({ labels, datasets });
         const csvContent = [columns.join(','), ...rows.map(r => r.map(v => String(v)).join(','))].join('\n');
-        const eName = JSON.stringify(runName);
-        const eNode = JSON.stringify(nodeId);
-        const eCsv  = JSON.stringify(csvContent);
+        const eName   = JSON.stringify(runName);
+        const eNode   = JSON.stringify(nodeId);
+        const eCsv    = JSON.stringify(csvContent);
+        const eXLabel = JSON.stringify(xIdx >= 0 ? 'nTime' : 'sampleIndex');
         const nSamp = rows.length;
         const nChan = plotCols.length;
 
@@ -967,9 +1007,11 @@
     .ch-btn.hidden-ch{opacity:.3}
     .chart-wrap{flex:1;padding:16px 20px;min-height:0}
     canvas{width:100%!important;height:100%!important}
-    footer{padding:8px 20px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-shrink:0}
+    footer{padding:8px 20px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-shrink:0;flex-wrap:wrap}
     .btn{cursor:pointer;border:none;border-radius:4px;padding:6px 16px;font-family:inherit;font-size:.82rem;font-weight:600;background:#38bdf8;color:#0f172a}
+    .btn.sec{background:#334155;color:var(--text)}
     .btn:hover{filter:brightness(1.15)}
+    select.fmt{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:inherit;font-size:.78rem;cursor:pointer}
   </style>
 </head><body>
   <header>
@@ -979,13 +1021,20 @@
   <div class="controls" id="ch"></div>
   <div class="chart-wrap"><canvas id="c"></canvas></div>
   <footer>
-    <button class="btn" onclick="dl()">&#8595; Download CSV</button>
+    <label style="color:var(--muted);font-size:.78rem">Format:</label>
+    <select id="fmt" class="fmt">
+      <option value="csv">CSV</option>
+      <option value="json">JSON</option>
+    </select>
+    <button class="btn sec" onclick="dl('full')">&#8595; Download Full</button>
+    <button class="btn"     onclick="dl('seen')">&#8595; Download Seen</button>
   </footer>
   <script>
-    const cfg = ${chartCfg};
-    const csv = ${eCsv};
-    const name = ${eName};
-    const chart = new Chart(document.getElementById('c').getContext('2d'), {
+    const cfg    = ${chartCfg};
+    const csv    = ${eCsv};
+    const name   = ${eName};
+    const xLabel = ${eXLabel};
+    const chart  = new Chart(document.getElementById('c').getContext('2d'), {
       type: 'line', data: cfg,
       options: {
         animation: false, responsive: true, maintainAspectRatio: false,
@@ -1008,10 +1057,46 @@
       });
       document.getElementById('ch').appendChild(b);
     });
-    function dl() {
+    function dl(mode) {
+      const fmt = document.getElementById('fmt').value;
+      let content, ext, mime;
+      if (mode === 'seen') {
+        // Collect visible datasets + x-axis column
+        const hdrs = [xLabel];
+        const cols = [cfg.labels];
+        cfg.datasets.forEach((ds, i) => {
+          if (!chart.data.datasets[i].hidden) { hdrs.push(ds.label); cols.push(ds.data); }
+        });
+        if (fmt === 'json') {
+          const rowObjs = cfg.labels.map((_, ri) => {
+            const o = {};
+            hdrs.forEach((h, ci) => { o[h] = cols[ci][ri]; });
+            return o;
+          });
+          content = JSON.stringify(rowObjs, null, 2); ext = 'json'; mime = 'application/json';
+        } else {
+          const rows = cfg.labels.map((_, ri) => hdrs.map((_, ci) => String(cols[ci][ri])).join(','));
+          content = [hdrs.join(','), ...rows].join('\\n'); ext = 'csv'; mime = 'text/csv';
+        }
+      } else {
+        // Full download
+        if (fmt === 'json') {
+          const lines = csv.trim().split('\\n');
+          const hdrs  = lines[0].split(',');
+          const rowObjs = lines.slice(1).map(l => {
+            const vals = l.split(','); const o = {};
+            hdrs.forEach((h, i) => { const n = Number(vals[i]); o[h] = isNaN(n) ? vals[i] : n; });
+            return o;
+          });
+          content = JSON.stringify(rowObjs, null, 2); ext = 'json'; mime = 'application/json';
+        } else {
+          content = csv; ext = 'csv'; mime = 'text/csv';
+        }
+      }
+      const suffix = mode === 'seen' ? '_seen' : '';
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-      a.download = name + '.csv'; a.click(); URL.revokeObjectURL(a.href);
+      a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+      a.download = name + suffix + '.' + ext; a.click(); URL.revokeObjectURL(a.href);
     }
   <\/script>
 </body></html>`;
@@ -1068,6 +1153,45 @@
           this.dataFlash = `Downloaded ${filename}`;
           setTimeout(() => { this.dataFlash = ''; }, 3000);
         } catch (e) { this.dataFlash = 'Error: ' + e.message; }
+      },
+
+      // ── Data tab: search-by-name helpers ─────────────────────
+      async dataSearch() {
+        if (!this.dataSearchNode || !this.dataSearchTag) {
+          this.dataSearchStatus = 'Please enter both a node ID and an experiment name.';
+          return;
+        }
+        this.dataSearchResult = null;
+        this.dataSearchStatus = 'Fetching\u2026';
+        try {
+          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataSearchNode)}?experimentName=${encodeURIComponent(this.dataSearchTag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          this.dataSearchResult = { columns, rows, node: this.dataSearchNode, tag: this.dataSearchTag };
+          this.dataSearchStatus = `\u2713 Found ${rows.length} samples, ${columns.length} columns.`;
+        } catch (e) {
+          this.dataSearchStatus = 'Error: ' + e.message;
+          this.dataSearchResult = null;
+        }
+      },
+
+      dataSearchPlot() {
+        if (!this.dataSearchResult) return;
+        const { columns, rows, node, tag } = this.dataSearchResult;
+        const html = this.buildPlotHtml(node, tag, columns, rows);
+        window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+      },
+
+      dataSearchDownload() {
+        if (!this.dataSearchResult) return;
+        const { columns, rows, node, tag } = this.dataSearchResult;
+        const csvLines = [columns.join(','), ...rows.map(r => r.map(v => String(v)).join(','))];
+        const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${node}_${tag}.csv`; a.click(); URL.revokeObjectURL(a.href);
       },
 
       // ══════════════════════════════════════════════════════════

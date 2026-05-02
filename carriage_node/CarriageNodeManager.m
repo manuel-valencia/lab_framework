@@ -54,6 +54,7 @@ classdef CarriageNodeManager < ExperimentManager
         isCollecting        % logical
         duration            % seconds, set by Configure
         sampleRate          % Hz, from hardware config (or Configure override)
+        outputChannels      % cell array of field names to keep in output (empty = all)
 
         % Raw DAQ output from handleRun — processed in enterPostProc
         rawData             % MATLAB timetable returned by read(daqSession, ...)
@@ -72,6 +73,7 @@ classdef CarriageNodeManager < ExperimentManager
 
             obj.isCollecting      = false;
             obj.rawData           = [];
+            obj.outputChannels    = {};
             obj.motionCalibBuffer = struct('heave', [], 'pitch', [], 'roll', []);
             obj.motionCalib       = struct();
 
@@ -191,6 +193,21 @@ classdef CarriageNodeManager < ExperimentManager
                 obj.log("INFO", sprintf("Sample rate overridden to %d Hz by Configure command.", params.sampleRate));
             end
 
+            % Optional: restrict which output columns are saved / sent to REST
+            if isfield(params, 'outputChannels') && ~isempty(params.outputChannels)
+                raw = params.outputChannels;
+                if ischar(raw) || isstring(raw)
+                    obj.outputChannels = cellstr(raw);
+                elseif iscell(raw)
+                    obj.outputChannels = cellfun(@char, raw, 'UniformOutput', false);
+                else
+                    obj.outputChannels = {};
+                end
+                obj.log("INFO", sprintf("outputChannels restricted to: %s", strjoin(obj.outputChannels, ', ')));
+            else
+                obj.outputChannels = {};   % empty = keep all
+            end
+
             obj.log("INFO", sprintf("Carriage config valid: duration=%.1f s, sampleRate=%d Hz.", ...
                 params.duration, obj.sampleRate));
             isValid = true;
@@ -201,6 +218,7 @@ classdef CarriageNodeManager < ExperimentManager
             obj.rawData        = [];
             obj.experimentData = [];
             obj.isCollecting   = false;
+            obj.outputChannels = {};
 
             if isfield(obj.experimentSpec.params, 'experiments')
                 currentParams = obj.experimentSpec.params.experiments(obj.currentExperimentIndex);
@@ -512,6 +530,22 @@ classdef CarriageNodeManager < ExperimentManager
                 'Sync',      num2cell(Sync));
 
             obj.log("INFO", sprintf("enterPostProc: %d samples processed → Fx,Fy,Fz,Mx,My,Mz,Heave,Pitch,Roll,Sync.", nSamples));
+
+            % --- 6. Apply outputChannels filter (if configured) ---
+            if ~isempty(obj.outputChannels)
+                allFields  = fieldnames(obj.experimentData);
+                keepFields = intersect(allFields, obj.outputChannels, 'stable');
+                if ~isempty(keepFields)
+                    removeFields = setdiff(allFields, keepFields);
+                    if ~isempty(removeFields)
+                        obj.experimentData = rmfield(obj.experimentData, removeFields);
+                        obj.log("INFO", sprintf("outputChannels filter: keeping [%s], removed [%s].", ...
+                            strjoin(keepFields(:)', ', '), strjoin(removeFields(:)', ', ')));
+                    end
+                else
+                    obj.log("WARN", "outputChannels: no recognised field names — keeping all channels.");
+                end
+            end
 
             % Hand off to base class: saves CSV, POSTs to REST, handles state transition
             enterPostProc@ExperimentManager(obj);
