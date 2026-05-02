@@ -2187,6 +2187,11 @@
       // ══════════════════════════════════════════════════════════
 
       startTestSensor(nodeId) {
+        // Only waveMakerProbeNode uses wave probes for TestSensor.
+        if (nodeId !== 'waveMakerProbeNode') {
+          this.sendCmd(nodeId, { cmd: 'Test', params: { target: 'sensor' } });
+          return;
+        }
         const gains = this.nodes[nodeId]?.probeGains || [];
         // Pre-fill with probes that have a non-identity (calibrated) gain
         const calibrated = gains
@@ -2202,6 +2207,13 @@
       },
 
       submitTestSensor() {
+        if (this.cmdTarget !== 'waveMakerProbeNode') {
+          this.sendCmd(this.cmdTarget, { cmd: 'Test', params: { target: 'sensor' } });
+          this.testSensorActive = false;
+          this.cmdFlash = 'TestSensor sent';
+          setTimeout(() => { this.cmdFlash = ''; }, 3000);
+          return;
+        }
         const indices = this.testSensorProbeInput
           .split(',')
           .map(s => parseInt(s.trim(), 10))
