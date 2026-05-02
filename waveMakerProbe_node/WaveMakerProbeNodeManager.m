@@ -85,6 +85,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
         daqSession          % NI-DAQ session object
         paddleChannel       % output channel ID (from config)
         streamListener      % logical flag: true when ScansAvailableFcn is active
+        outputChannels      % cell array of field names to keep in output (empty = all)
     end
 
     methods
@@ -107,6 +108,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.signalParams = struct();
             obj.allPaddleSignals = {};
             obj.streamListener = false;
+            obj.outputChannels    = {};
 
             nodeDir = fileparts(mfilename('fullpath'));
             obj.logDir = fullfile(nodeDir, 'waveMakerProbeNodeLogs');
@@ -125,7 +127,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 end
             else
                 obj.wavemakerModel = [];
-                obj.log("WARN", "wavemaker_model.mat not found — amplitude will be sent as voltage (uncalibrated).");
+                obj.log("WARN", "wavemaker_model.mat not found -- amplitude will be sent as voltage (uncalibrated).");
             end
 
             % Load probe gains if previously saved.
@@ -164,7 +166,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             %   node.setActiveProbes(1:8);        % activate all probes
             if ~isnumeric(probeIndices) || isempty(probeIndices) ...
                     || ~all(probeIndices >= 1 & probeIndices <= 8)
-                obj.log("WARN", "setActiveProbes: input must be a non-empty numeric array with indices 1–8. No change made.");
+                obj.log("WARN", "setActiveProbes: input must be a non-empty numeric array with indices 1-8. No change made.");
                 return;
             end
             obj.activeProbes = probeIndices(:)';   % always store as row vector
@@ -428,6 +430,13 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             % Also keep obj.amplitude / obj.frequency set for sinusoidal/pulse handleTest compatibility.
             if isfield(currentParams, 'amplitude'),  obj.amplitude  = currentParams.amplitude;  end
             if isfield(currentParams, 'frequency'),  obj.frequency  = currentParams.frequency;  end
+
+            % Read outputChannels for this sub-experiment (empty = keep all channels)
+            if isfield(currentParams, 'outputChannels') && ~isempty(currentParams.outputChannels)
+                obj.outputChannels = cellstr(currentParams.outputChannels);
+            else
+                obj.outputChannels = {};
+            end
 
             obj.log("INFO", sprintf("WaveMakerProbe experiment ready: type='%s', duration=%.1f s, probes=[%s].", ...
                 obj.signalType, obj.duration, ...
@@ -750,7 +759,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                         Ak_V = Ak(:) ./ mag_vec;           % nF×1  (V)
                     else
                         Ak_V = Ak(:) / 100;   % cm → m used as V (fallback, no model)
-                        obj.log("WARN", "computeAndPreviewSignal [bretschneider]: no model — using Ak_cm/100 as voltage.");
+                        obj.log("WARN", "computeAndPreviewSignal [bretschneider]: no model -- using Ak_cm/100 as voltage.");
                     end
 
                     % Synthesise signals as sum of cosines  (nF×N outer product)
@@ -940,12 +949,13 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             % paddleSignal is pre-computed in setupCurrentExperiment (volts).
             % Recompute only if it is missing or stale.
             if isempty(obj.paddleSignal) || numel(obj.paddleSignal) ~= nSamples
-                obj.log("WARN", "handleRun: paddleSignal missing or wrong length — recomputing.");
+                obj.log("WARN", "handleRun: paddleSignal missing or wrong length -- recomputing.");
                 obj.computeAndPreviewSignal();
             end
 
             obj.log("INFO", sprintf("handleRun: type='%s', peak=%.4f V, %d samples (%.1f s @ %d Hz).", ...
                 obj.signalType, max(abs(obj.paddleSignal)), nSamples, obj.duration, obj.sampleRate));
+            obj.log("INFO", sprintf("handleRun: acquiring %.1f s at %d Hz...", obj.duration, obj.sampleRate));
 
             % Background simultaneous output+acquisition with cooperative polling.
             % Small read windows + drawnow keep MATLAB responsive so Abort can be
@@ -1021,8 +1031,26 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.experimentData = struct(args{:});
 
             obj.isCollecting = false;
-            obj.log("INFO", sprintf("handleRun: complete. Stored %d samples for probes [%s].", ...
-                nSamples, strjoin(arrayfun(@(x) sprintf('H%d',x), obj.activeProbes, 'UniformOutput', false), ',')));
+            obj.log("INFO", sprintf("handleRun: stored %d samples for probes [%s].", ...
+                nAcq, strjoin(arrayfun(@(x) sprintf('H%d',x), obj.activeProbes, 'UniformOutput', false), ',')));
+
+            % Apply outputChannels filter if configured (e.g. from template params)
+            if ~isempty(obj.outputChannels)
+                allFields  = fieldnames(obj.experimentData);
+                keepFields = intersect(allFields, obj.outputChannels, 'stable');
+                if ~isempty(keepFields)
+                    removeFields = setdiff(allFields, keepFields);
+                    if ~isempty(removeFields)
+                        obj.experimentData = rmfield(obj.experimentData, removeFields);
+                        obj.log("INFO", sprintf("outputChannels filter: keeping [%s], removed [%s].", ...
+                            strjoin(keepFields(:)', ', '), strjoin(removeFields(:)', ', ')));
+                    end
+                else
+                    obj.log("WARN", "outputChannels: no recognised field names -- keeping all channels.");
+                end
+            end
+
+            obj.log("INFO", "handleRun: acquisition complete.");
             obj.transition(State.POSTPROC);
         end
 
@@ -1132,7 +1160,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                     rawBlock = read(obj.daqSession, winSamples);   % winSamples × 8
                     rawArr   = rawBlock.Variables;
                 catch ME
-                    obj.log("WARN", sprintf("[awaitReady] DAQ read error: %s — stopping settle wait.", ME.message));
+                    obj.log("WARN", sprintf("[awaitReady] DAQ read error: %s -- stopping settle wait.", ME.message));
                     break;
                 end
 
@@ -1151,7 +1179,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
 
                 if allBelow
                     holdSec = holdSec + winSec;
-                    obj.log("INFO", sprintf("[awaitReady] Below threshold — hold %.1f / %.1f s.", holdSec, holdNeeded));
+                    obj.log("INFO", sprintf("[awaitReady] Below threshold -- hold %.1f / %.1f s.", holdSec, holdNeeded));
                     if holdSec >= holdNeeded
                         obj.log("INFO", sprintf("[awaitReady] Ready confirmed after %.1f s.", toc(tStart)));
                         try; stop(obj.daqSession); write(obj.daqSession, 0); catch; end
@@ -1159,7 +1187,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                     end
                 else
                     if holdSec > 0
-                        obj.log("INFO", sprintf("[awaitReady] Activity detected — reset hold counter (was %.1f s).", holdSec));
+                        obj.log("INFO", sprintf("[awaitReady] Activity detected -- reset hold counter (was %.1f s).", holdSec));
                     end
                     holdSec = 0;
                 end
@@ -1206,7 +1234,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             end
             if isempty(obj.wavemakerModel)
                 U_amp = A_m_metres;
-                obj.log("WARN", "heightToVoltage_V: no wavemaker model — using amplitude as voltage (uncalibrated).");
+                obj.log("WARN", "heightToVoltage_V: no wavemaker model -- using amplitude as voltage (uncalibrated).");
                 return;
             end
             [mag, ~, ~] = bode(obj.wavemakerModel, 2*pi*freq_Hz);

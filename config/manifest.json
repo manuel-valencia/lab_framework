@@ -10,6 +10,10 @@
         "hasActuator": true
       },
       {
+        "path": "network/",
+        "startup_script": "RestServer.py"
+      },
+      {
         "path": "control_node/",
         "startup_script": "main.py"
       }
