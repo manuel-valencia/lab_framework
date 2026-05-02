@@ -379,7 +379,7 @@ class CommClient:
         payload = {
             'clientID': self.client_id,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
-            'state': 'READY',
+            'health': 'READY',  # connectivity ping — not an FSM state
             'ip': local_ip
         }
         

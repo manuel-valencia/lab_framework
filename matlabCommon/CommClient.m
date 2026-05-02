@@ -264,7 +264,7 @@ classdef CommClient < handle
 
             payloadStruct.clientID = obj.clientID;
             payloadStruct.timestamp = datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS');
-            payloadStruct.state = 'READY';
+            payloadStruct.health = 'READY';  % connectivity ping — not an FSM state
             try
                 payloadStruct.ip = char(java.net.InetAddress.getLocalHost().getHostAddress());
             catch
