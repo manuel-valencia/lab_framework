@@ -67,6 +67,7 @@ from datetime import datetime
 import io
 import os
 import json
+import re
 import shutil
 import glob
 import numpy as np
@@ -77,9 +78,10 @@ except ImportError:
     _SCIPY_AVAILABLE = False
 
 TEMP_DIR = os.path.join(os.path.dirname(__file__), "tempRestData")
-if os.path.exists(TEMP_DIR):
-    shutil.rmtree(TEMP_DIR)
-os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)   # preserve data across server restarts
+
+# Strips the _YYYYMMDD_HHMMSS timestamp suffix added to stored filenames
+_TS_SUFFIX = re.compile(r'_\d{8}_\d{6}$')
 
 SUPPORTED_EXTENSIONS = ('.csv', '.json', '.jsonl')
 
@@ -206,6 +208,10 @@ def receive_data(clientID):
     if not experimentTag:
         experimentTag = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # Append a timestamp to every stored filename to prevent overwrites across sessions
+    ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fileTag = f"{experimentTag}_{ts}"
+
     contentType = request.content_type or ""
 
     if contentType.startswith("application/json"):
@@ -215,7 +221,7 @@ def receive_data(clientID):
             if not isinstance(data, list):
                 return jsonify({"error": "Invalid or missing 'data' list in JSON."}), 400
 
-            filePath = os.path.join(clientDir, f"{experimentTag}.jsonl")
+            filePath = os.path.join(clientDir, f"{fileTag}.jsonl")
             with open(filePath, 'w', encoding='utf-8') as f:
                 for entry in data:
                     f.write(json.dumps(entry) + '\n')
@@ -228,7 +234,7 @@ def receive_data(clientID):
 
     elif contentType.startswith("text/csv"):
         try:
-            filePath = os.path.join(clientDir, f"{experimentTag}.csv")
+            filePath = os.path.join(clientDir, f"{fileTag}.csv")
             csv_data = request.get_data(as_text=True)
             with open(filePath, 'w', encoding='utf-8') as f:
                 f.write(csv_data)
@@ -319,10 +325,12 @@ def retrieve_data(clientID):
             files = []
             for fp in fileList:
                 basename = os.path.basename(fp)
-                tag, ext = os.path.splitext(basename)
+                stem, ext = os.path.splitext(basename)
                 stat = os.stat(fp)
+                display_tag = _TS_SUFFIX.sub('', stem)  # strip _YYYYMMDD_HHMMSS if present
                 files.append({
-                    "tag":      tag,
+                    "tag":      display_tag,   # human-readable short name for display
+                    "fileTag":  stem,          # full stem for exact retrieval
                     "ext":      ext.lstrip('.'),
                     "modified": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
                     "size_kb":  round(stat.st_size / 1024, 1)
@@ -334,20 +342,19 @@ def retrieve_data(clientID):
         if requestedFormat not in ["", "csv", "json", "jsonl"]:
             return jsonify({"error": f"Invalid format requested: {requestedFormat}"}), 400
 
-        # Search for file
+        # Search for file — exact fileTag match first, then short-name prefix match
+        exts = [requestedFormat] if requestedFormat else ["csv", "jsonl", "json"]
         candidates = []
-        if requestedFormat:
-            candidates = glob.glob(os.path.join(clientDir, f"{experimentTag}.{requestedFormat}"))
-        else:
-            # Try all known types
-            for ext in ["csv", "json", "jsonl"]:
-                candidates.extend(glob.glob(os.path.join(clientDir, f"{experimentTag}.{ext}")))
+        for ext in exts:
+            # Exact match (fileTag e.g. force_only_001_20260501_224126)
+            candidates.extend(glob.glob(os.path.join(clientDir, f"{experimentTag}.{ext}")))
+            # Prefix match for human short names (e.g. force_only_001)
+            candidates.extend(glob.glob(os.path.join(clientDir, f"{experimentTag}_????????_??????.{ext}")))
         if not candidates:
             return jsonify({"error": f"No matching file for experiment '{experimentTag}'"}), 404
 
-        # If multiple candidates, pick the most recently modified file
+        # Pick most recently modified
         filePath = max(candidates, key=os.path.getmtime)
-        filePath = candidates[0]  # use first match
 
     # Return content
     try:
@@ -485,6 +492,31 @@ def health():
         "stored_clients": numClients,
         "total_files": totalFiles
     }), 200
+
+#----------------------------------------------------------
+
+@app.route('/data/clear', methods=['POST', 'OPTIONS'])
+def clear_data():
+    """
+    POST /data/clear
+    Removes all files from tempRestData. Requires confirmation token in request body.
+
+    Request body (JSON):
+        {"confirm": "CLEAR_ALL_DATA"}
+
+    Returns 403 if the confirm field is missing or incorrect.
+    """
+    if request.method == 'OPTIONS':
+        return '', 204
+    body = request.get_json(silent=True) or {}
+    if body.get('confirm') != 'CLEAR_ALL_DATA':
+        return jsonify({"error": 'Request must include {"confirm": "CLEAR_ALL_DATA"}'}), 403
+    try:
+        shutil.rmtree(TEMP_DIR)
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        return jsonify({"status": "cleared", "message": "All stored data has been removed."}), 200
+    except Exception as e:
+        return jsonify({"error": f"Clear failed: {str(e)}"}), 500
 
 #----------------------------------------------------------
 

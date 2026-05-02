@@ -811,16 +811,17 @@ classdef (Abstract) ExperimentManager < handle
                 end
                 
                 tag = matlab.lang.makeValidName(tag);
+                localTs = datestr(now, 'yyyymmdd_HHMMSS'); %#ok<TNOW1,DATST>
                 
-                % Save current experiment data
+                % Save current experiment data (timestamped filename prevents overwrite)
                 try
                     T = struct2table(obj.experimentData);
-                    csvPath = fullfile(outDir, sprintf('%s_data_%s.csv', obj.cfg.clientID, tag));
+                    csvPath = fullfile(outDir, sprintf('%s_data_%s_%s.csv', obj.cfg.clientID, tag, localTs));
                     writetable(T, csvPath);
                     obj.log("INFO", sprintf("Experiment data saved to CSV: %s", csvPath));
                 catch ME
                     % Fallback: save as JSONL
-                    jsonlPath = fullfile(outDir, sprintf('%s_data_%s.jsonl', obj.cfg.clientID, tag));
+                    jsonlPath = fullfile(outDir, sprintf('%s_data_%s_%s.jsonl', obj.cfg.clientID, tag, localTs));
                     try
                         fid = fopen(jsonlPath, 'w');
                         for i = 1:numel(obj.experimentData)

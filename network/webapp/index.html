@@ -513,6 +513,13 @@
 
         <!-- Run table -->
         <div x-show="dataRuns.length">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <span style="font-size:.75rem;color:var(--muted)">Download format:</span>
+            <select x-model="dataFmt" class="fmt" style="padding:3px 8px;font-size:.78rem">
+              <option value="csv">CSV</option>
+              <option value="mat">MAT</option>
+            </select>
+          </div>
           <table class="data-table">
             <thead>
               <tr>
@@ -524,7 +531,7 @@
               </tr>
             </thead>
             <tbody>
-              <template x-for="run in dataRuns" :key="run.tag">
+              <template x-for="run in dataRuns" :key="run.fileTag || run.tag">
                 <tr>
                   <td x-text="run.tag"></td>
                   <td><span style="font-size:.7rem;color:var(--muted)" x-text="run.ext.toUpperCase()"></span></td>
@@ -533,9 +540,9 @@
                   <td style="text-align:right">
                     <div style="display:flex;gap:6px;justify-content:flex-end">
                       <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem"
-                              @click="dataOpenPlot(run.tag)">&#128202; Plot</button>
+                              @click="dataOpenPlot(run.fileTag || run.tag, run.tag)">&#128202; Plot</button>
                       <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem"
-                              @click="dataDownload(run.tag)">&#8595; Download</button>
+                              @click="dataDownload(run.fileTag || run.tag, run.tag)">&#8595; Download</button>
                     </div>
                   </td>
                 </tr>
@@ -703,7 +710,11 @@
       dataNodeId:   '',
       dataNodeList: [],
       dataRuns:     [],
+      dataFmt:      'csv',    // format selector for session browser downloads
       dataFlash:    '',
+      dataClearActive:  false,
+      dataClearConfirm: '',
+      dataClearStatus:  '',
 
       // Data tab — search by name (non-session or direct lookup)
       dataSearchNode:   '',
@@ -1152,35 +1163,64 @@
         } catch (e) { this.dataFlash = 'Error: ' + e.message; }
       },
 
-      async dataOpenPlot(tag) {
+      async dataOpenPlot(fileTag, displayTag) {
+        const title = displayTag || fileTag;
         try {
-          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}?experimentName=${encodeURIComponent(tag)}`;
+          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}?experimentName=${encodeURIComponent(fileTag)}`;
           const res  = await fetch(url);
           const resp = await res.json();
           if (!res.ok) throw new Error(resp.error || res.statusText);
           const { columns, rows } = this._parseRestResponse(resp);
-          const html = this.buildPlotHtml(this.dataNodeId, tag, columns, rows);
+          const html = this.buildPlotHtml(this.dataNodeId, title, columns, rows);
           window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
         } catch (e) { this.dataFlash = 'Error: ' + e.message; }
       },
 
-      async dataDownload(tag) {
+      async dataDownload(fileTag, displayTag) {
+        const fname = displayTag || fileTag;
         try {
-          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}?experimentName=${encodeURIComponent(tag)}`;
+          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}?experimentName=${encodeURIComponent(fileTag)}`;
           const res  = await fetch(url);
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || res.statusText);
-          let content, filename, mime;
-          if (data.format === 'csv') {
-            content = data.csv; filename = `${this.dataNodeId}_${tag}.csv`; mime = 'text/csv';
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          if (this.dataFmt === 'mat') {
+            const { columns, rows } = this._parseRestResponse(resp);
+            const mr = await fetch(`http://${location.hostname}:5000/api/convert/mat`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: fname, columns, data: rows })
+            });
+            if (!mr.ok) { this.dataFlash = 'MAT conversion failed: ' + mr.statusText; return; }
+            const blob = await mr.blob();
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${fname}.mat`; a.click(); URL.revokeObjectURL(a.href);
           } else {
-            content = JSON.stringify(data.data, null, 2); filename = `${this.dataNodeId}_${tag}.json`; mime = 'application/json';
+            let content, filename, mime;
+            if (resp.format === 'csv') {
+              content = resp.csv; filename = `${fname}.csv`; mime = 'text/csv';
+            } else {
+              content = JSON.stringify(resp.data, null, 2); filename = `${fname}.json`; mime = 'application/json';
+            }
+            const blob = new Blob([content], { type: mime });
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href);
           }
-          const blob = new Blob([content], { type: mime });
-          const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href);
-          this.dataFlash = `Downloaded ${filename}`;
+          this.dataFlash = `Downloaded ${fname}`;
           setTimeout(() => { this.dataFlash = ''; }, 3000);
         } catch (e) { this.dataFlash = 'Error: ' + e.message; }
+      },
+
+      async dataClearExecute() {
+        if (this.dataClearConfirm !== 'CLEAR') { this.dataClearStatus = 'Error: type CLEAR to confirm'; return; }
+        try {
+          const res = await fetch(`http://${location.hostname}:5000/data/clear`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: 'CLEAR_ALL_DATA' })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          this.dataClearStatus = 'All data cleared.';
+          this.dataClearConfirm = ''; this.dataClearActive = false;
+          this.dataRuns = []; this.dataNodeList = []; this.dataNodeId = '';
+          setTimeout(() => { this.dataClearStatus = ''; }, 4000);
+        } catch (e) { this.dataClearStatus = 'Error: ' + e.message; }
       },
 
       // ── Data tab: search-by-name helpers ─────────────────────
