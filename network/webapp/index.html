@@ -512,6 +512,40 @@
             </template>
           </div>
 
+          <!-- waveMakerProbeNode: probes_only — zero paddle notice -->
+          <div x-show="expNodeType === 'waveMakerProbeNode' && expSubType === 'probes_only'"
+               style="margin:10px 0;padding:8px 10px;background:#1a2535;border:1px solid #2d4a6b;border-radius:6px;font-size:.78rem;color:#93c5fd">
+            &#8505; Paddle outputs 0&nbsp;V — the wavemaker DAQ channel stays active but produces no motion.
+          </div>
+
+          <!-- waveMakerProbeNode: wave_and_probes — signal type + params -->
+          <div x-show="expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes'"
+               style="margin-top:8px">
+            <div class="section-title">Wave signal</div>
+            <div class="form-row">
+              <label style="font-size:.78rem">Signal type</label>
+              <select x-model="expWaveSignalType" @change="onExpWaveSignalTypeChange()" style="font-size:.78rem;padding:3px 6px">
+                <template x-for="st in getExpWaveSignalTypes()" :key="st.id">
+                  <option :value="st.id" x-text="st.label"></option>
+                </template>
+              </select>
+            </div>
+            <template x-for="field in getExpWaveFields()" :key="field.key">
+              <div style="margin-bottom:5px">
+                <div style="color:var(--muted);margin-bottom:2px;font-size:.76rem"
+                     x-text="field.label + (field.unit ? ' (' + field.unit + ')' : '') + (field.required ? ' *' : '')"></div>
+                <input type="number"
+                       :placeholder="field.default !== undefined ? String(field.default) : ''"
+                       :step="field.type === 'int' ? '1' : 'any'"
+                       :min="field.min !== undefined ? field.min : ''"
+                       x-model="expWaveFormValues[field.key]"
+                       style="padding:4px 8px;font-size:.78rem" />
+              </div>
+            </template>
+            <div x-show="expWaveFormError" x-text="expWaveFormError"
+                 style="color:#f87171;font-size:.75rem;margin-top:4px"></div>
+          </div>
+
           <!-- Action buttons -->
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
             <button class="btn btn-primary"
@@ -734,6 +768,13 @@
         { key: 'duration',   label: 'Duration (s)',         type: 'number', required: true,  hint: 'Acquisition time in seconds' },
         { key: 'sampleRate', label: 'Sample rate (Hz)',     type: 'number', required: false, hint: 'Default: 50 Hz (leave blank to use hardware default)' },
       ]
+    },
+    waveMakerProbeNode: {
+      fields: [
+        { key: 'name',         label: 'Run name',      type: 'text',   required: false, hint: 'e.g. wave_run_001' },
+        { key: 'duration',     label: 'Duration (s)',   type: 'number', required: true,  hint: 'Total acquisition time in seconds' },
+        { key: 'activeProbes', label: 'Active probes',  type: 'text',   required: true,  hint: 'Comma-separated probe indices 1–8, e.g. 1,3,5' },
+      ]
     }
   };
 
@@ -818,6 +859,10 @@
       expDebugOpen:     false,
       expDebugLogs:     {},   // { nodeId: [{level, text}, ...] }
       MAX_DEBUG_LINES:  100,
+      expSubType:       '',
+      expWaveSignalType: 'sinusoidal',
+      expWaveFormValues: {},
+      expWaveFormError:  '',
 
       // ── Experiment progress bar ────────────────────────────────
       expProgress:         0,     // 0-100 percent fill
@@ -1067,6 +1112,19 @@
             }
             this.expExtraParams   = extra;
             this.expDataAvailable = false;
+            // Sub-type and wave signal setup
+            this.expSubType = data._subType || '';
+            this.expWaveFormError = '';
+            if (this.expSubType === 'wave_and_probes') {
+              if (!Object.keys(this.actuatorProfiles).length) {
+                try {
+                  const r = await fetch('/api/actuator-profiles');
+                  if (r.ok) this.actuatorProfiles = await r.json();
+                } catch (_e) {}
+              }
+              this.expWaveSignalType = 'sinusoidal';
+              this._initExpWaveFormDefaults();
+            }
           }
           this.activeTab = 'Experiment';
         } catch (e) {
@@ -1076,6 +1134,7 @@
 
       expConfigure() {
         if (!this.expNodeTarget || !this.expNodeType) return;
+        this.expWaveFormError = '';
         const fields = EXP_FORMS[this.expNodeType]?.fields || [];
         // Start with extra params (e.g. outputChannels) then overlay form fields
         const params = { ...this.expExtraParams };
@@ -1084,6 +1143,21 @@
           if (val === '' || val === undefined) continue;
           params[f.key] = f.type === 'number' ? Number(val) : val;
         }
+        // Parse activeProbes text → int array for waveMakerProbeNode
+        if (this.expNodeType === 'waveMakerProbeNode' && params.activeProbes) {
+          const arr = String(params.activeProbes).split(',')
+            .map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+          if (!arr.length) {
+            this.expFlash = 'Error: activeProbes must be comma-separated integers (1–8)';
+            return;
+          }
+          params.activeProbes = arr;
+        }
+        // Merge wave signal params for wave_and_probes subtype
+        if (this.expSubType === 'wave_and_probes') {
+          const err = this._mergeExpWaveParams(params);
+          if (err) { this.expFlash = 'Error: ' + err; return; }
+        }
         this.expDataAvailable = false;
         // Clear debug terminal for this node on new configure
         if (this.expNodeTarget) this.expDebugLogs[this.expNodeTarget] = [];
@@ -1091,6 +1165,56 @@
         this.sendCmd(this.expNodeTarget, { cmd: 'Run', params });
         this.expFlash = `Configure sent to ${this.expNodeTarget} — awaiting CONFIGUREPENDING…`;
         setTimeout(() => { this.expFlash = ''; }, 5000);
+      },
+
+      getExpWaveSignalTypes() {
+        const profile = this.actuatorProfiles[this.expNodeTarget] ||
+                        this.actuatorProfiles[this.expNodeType] ||
+                        this.actuatorProfiles['waveMakerProbeNode'];
+        if (!profile) return [];
+        return profile.signalTypes || [];
+      },
+
+      getExpWaveFields() {
+        const types = this.getExpWaveSignalTypes();
+        const st = types.find(s => s.id === this.expWaveSignalType);
+        return st ? st.fields : [];
+      },
+
+      onExpWaveSignalTypeChange() {
+        this.expWaveFormError = '';
+        this._initExpWaveFormDefaults();
+      },
+
+      _initExpWaveFormDefaults() {
+        const fields = this.getExpWaveFields();
+        const vals = {};
+        for (const f of fields) {
+          vals[f.key] = f.default !== undefined ? String(f.default) : '';
+        }
+        this.expWaveFormValues = vals;
+      },
+
+      _mergeExpWaveParams(params) {
+        const fields = this.getExpWaveFields();
+        params.signalType = this.expWaveSignalType;
+        for (const f of fields) {
+          const raw = (this.expWaveFormValues[f.key] ?? '').trim();
+          if (f.required && !raw) return `"${f.label}" is required.`;
+          if (!raw) continue;
+          if (f.type === 'int') {
+            const v = parseInt(raw, 10);
+            if (isNaN(v) || v < (f.min ?? -Infinity))
+              return `"${f.label}" must be an integer${f.min !== undefined ? ' ≥ ' + f.min : ''}.`;
+            params[f.key] = v;
+          } else {
+            const v = parseFloat(raw);
+            if (isNaN(v) || v < (f.min ?? -Infinity))
+              return `"${f.label}" must be a number${f.min !== undefined ? ' ≥ ' + f.min : ''}.`;
+            params[f.key] = v;
+          }
+        }
+        return null;
       },
 
       async expDownload() {

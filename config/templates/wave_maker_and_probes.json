@@ -1,0 +1,7 @@
+{
+  "_description": "Drive the wave paddle and simultaneously collect wave probe height data. Select the signal type, configure its parameters, and choose which probes to record. The node will compute and preview the paddle signal before running.",
+  "_nodeType": "waveMakerProbeNode",
+  "_subType": "wave_and_probes",
+  "name": "wave_run_001",
+  "duration": 60
+}
