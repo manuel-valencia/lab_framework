@@ -538,7 +538,7 @@ classdef CarriageNodeManager < ExperimentManager
                 'Roll_deg',  num2cell(Roll_deg), ...
                 'Sync',      num2cell(Sync));
 
-            obj.log("INFO", sprintf("enterPostProc: %d samples processed → Fx,Fy,Fz,Mx,My,Mz,Heave,Pitch,Roll,Sync.", nSamples));
+            obj.log("INFO", sprintf("enterPostProc: %d samples processed -> Fx,Fy,Fz,Mx,My,Mz,Heave,Pitch,Roll,Sync.", nSamples));
 
             % --- 6. Apply outputChannels filter (if configured) ---
             if ~isempty(obj.outputChannels)

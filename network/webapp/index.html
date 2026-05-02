@@ -579,11 +579,16 @@
              :style="dataSearchStatus.startsWith('Error') ? 'color:#fca5a5' : 'color:#86efac'"
              x-text="dataSearchStatus"></div>
 
-        <div x-show="dataSearchResult" style="display:flex;gap:8px">
+        <div x-show="dataSearchResult" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-secondary" style="padding:4px 14px;font-size:.8rem"
                   @click="dataSearchPlot()">&#128202; Plot</button>
+          <label style="margin:0;font-size:.78rem;color:var(--muted)">Format:</label>
+          <select x-model="dataSearchFmt" class="fmt" style="padding:3px 8px;font-size:.78rem">
+            <option value="csv">CSV</option>
+            <option value="mat">MAT</option>
+          </select>
           <button class="btn btn-secondary" style="padding:4px 14px;font-size:.8rem"
-                  @click="dataSearchDownload()">&#8595; Download CSV</button>
+                  @click="dataSearchDownload()">&#8595; Download</button>
         </div>
       </div>
     </div>
@@ -705,6 +710,7 @@
       dataSearchTag:    '',
       dataSearchResult: null,
       dataSearchStatus: '',
+      dataSearchFmt:    'csv',
 
       // ── Log tab ────────────────────────────────────────────────
       logLines: [],       // [{level, text}]
@@ -1206,14 +1212,29 @@
         window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
       },
 
-      dataSearchDownload() {
+      async dataSearchDownload() {
         if (!this.dataSearchResult) return;
         const { columns, rows, node, tag } = this.dataSearchResult;
-        const csvLines = [columns.join(','), ...rows.map(r => r.map(v => String(v)).join(','))];
-        const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `${node}_${tag}.csv`; a.click(); URL.revokeObjectURL(a.href);
+        if (this.dataSearchFmt === 'mat') {
+          try {
+            const resp = await fetch(`http://${location.hostname}:5000/api/convert/mat`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: tag, columns, data: rows })
+            });
+            if (!resp.ok) { this.dataSearchStatus = 'MAT conversion failed: ' + resp.statusText; return; }
+            const blob = await resp.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${node}_${tag}.mat`; a.click(); URL.revokeObjectURL(a.href);
+          } catch (e) { this.dataSearchStatus = 'MAT error: ' + e.message; }
+        } else {
+          const csvLines = [columns.join(','), ...rows.map(r => r.map(v => String(v)).join(','))];
+          const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `${node}_${tag}.csv`; a.click(); URL.revokeObjectURL(a.href);
+        }
       },
 
       // ══════════════════════════════════════════════════════════
