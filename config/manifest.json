@@ -1,6 +1,6 @@
 {
   "master_computer": {
-    "launchMosquitto": true,
+    "launchMosquitto": false,
     "nodes": [
       {
         "nodeId": "waveMakerProbeNode",

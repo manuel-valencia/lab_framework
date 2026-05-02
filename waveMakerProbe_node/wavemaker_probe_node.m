@@ -75,7 +75,7 @@ function wavemaker_probe_node(cfgFile, profile)
 
     %% 6. Main event loop — blocks here; all work is done in MQTT callbacks
     fprintf("[INFO] WaveMakerProbeNode online. Waiting for commands...\n");
-    while comm.connected
+    while ~isempty(comm.mqttClient) && comm.mqttClient.Connected
         pause(0.001);
     end
     fprintf("[INFO] WaveMakerProbeNode: broker connection lost. Shutting down.\n");
