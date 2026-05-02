@@ -97,3 +97,5 @@ test/**/VirtualIntegrationTest/*.mat
 # === Calibration Gains ===
 waveMakerProbe_node/probe_gains.mat
 waveMakerProbe_node/probe_gains.mat
+
+config/templates/
