@@ -243,7 +243,7 @@
             <input type="text" x-model="testSensorProbeInput"
                    @keydown.enter="submitTestSensor()"
                    placeholder="e.g. 1,3,5"
-                   style="width:100%;box-sizing:border-box;padding:4px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:.8rem" />
+                   style="width:100%;box-sizing:border-box;padding:4px 8px;font-size:.8rem" />
             <div x-show="testSensorWarning()" x-text="testSensorWarning()"
                  style="color:#fcd34d;font-size:.75rem;margin-top:4px"></div>
             <div style="display:flex;gap:8px;margin-top:8px">
@@ -261,7 +261,7 @@
               <label style="font-size:.78rem">Signal type</label>
               <select x-model="testActuatorSignalType"
                       @change="onTestActuatorSignalTypeChange()"
-                      style="font-size:.78rem;padding:3px 6px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                      style="font-size:.78rem;padding:3px 6px">
                 <template x-for="st in getTestActuatorSignalTypes()" :key="st.id">
                   <option :value="st.id" x-text="st.label"></option>
                 </template>
@@ -277,14 +277,17 @@
                        :step="field.type === 'int' ? '1' : 'any'"
                        :min="field.min !== undefined ? field.min : undefined"
                        x-model="testActuatorFormValues[field.key]"
-                       style="width:100%;box-sizing:border-box;padding:4px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:.78rem" />
+                       style="width:100%;box-sizing:border-box;padding:4px 8px;font-size:.78rem" />
               </div>
             </template>
 
             <div x-show="testActuatorFormError" x-text="testActuatorFormError"
                  style="color:#f87171;font-size:.75rem;margin-top:4px"></div>
             <div style="display:flex;gap:8px;margin-top:8px">
-              <button class="btn btn-primary" style="flex:1" @click="submitTestActuator()">Configure &amp; Preview</button>
+              <button class="btn btn-primary" style="flex:1"
+                      :disabled="testActuatorAwaiting"
+                      @click="submitTestActuator()"
+                      x-text="testActuatorAwaiting ? 'Sending\u2026' : 'Configure &amp; Preview'"></button>
               <button class="btn btn-secondary" @click="cancelTestActuator()">Cancel</button>
             </div>
           </div>
@@ -758,6 +761,7 @@
       actuatorProfiles: {},
       testActuatorActive: false,
       testActuatorPending: false,
+      testActuatorAwaiting: false,
       testActuatorNodeId: '',
       testActuatorSignalType: '',
       testActuatorFormValues: {},
@@ -940,9 +944,20 @@
           if (!isHeartbeat && this.testActuatorActive && nodeId === this.testActuatorNodeId) {
             if (msg.state === 'CONFIGUREPENDING') {
               this.testActuatorPending = true;
-            } else if (['IDLE', 'ERROR'].includes(msg.state) && this.testActuatorPending) {
-              this.testActuatorPending = false;
-              this.testActuatorActive = false;
+              this.testActuatorAwaiting = false;
+            } else if (['IDLE', 'ERROR'].includes(msg.state)) {
+              if (this.testActuatorPending) {
+                // Run finished or error after confirmation
+                this.testActuatorPending = false;
+                this.testActuatorActive = false;
+                this.testActuatorAwaiting = false;
+              } else if (this.testActuatorAwaiting) {
+                // Validation failed — keep form open, show error if not already set
+                this.testActuatorAwaiting = false;
+                if (!this.testActuatorFormError) {
+                  this.testActuatorFormError = 'Configuration rejected — check the log for details.';
+                }
+              }
             }
           }
         }
@@ -957,6 +972,13 @@
           if (_pm) this.startProgress(parseFloat(_pm[1]));
           // Detect run complete — snap progress bar to 100%
           if (/handleRun:\s*acquisition complete/i.test(_logText)) this.finishProgress();
+          // Capture WARN from MATLAB during TestActuator CONFIGUREVALIDATE phase
+          if (this.testActuatorAwaiting && !this.testActuatorPending &&
+              nodeId === this.testActuatorNodeId &&
+              level.toUpperCase() === 'WARN' &&
+              !/invalid configuration parameters/i.test(_logText)) {
+            this.testActuatorFormError = _logText;
+          }
           // Mirror to calibration terminal when this node is being calibrated
           if (this.calibWizard.active && nodeId === this.calibWizard.nodeId) {
             const tt = level.toUpperCase() === 'ERROR' ? 'error'
@@ -2089,6 +2111,7 @@
         this.testActuatorNodeId = nodeId;
         this.testActuatorActive = true;
         this.testActuatorPending = false;
+        this.testActuatorAwaiting = false;
         this.testActuatorFormError = '';
         this.testActuatorSignalType = profile.signalTypes[0].id;
         this._initActuatorFormDefaults();
@@ -2158,12 +2181,14 @@
         }
 
         this.sendCmd(this.testActuatorNodeId, { cmd: 'Test', params });
+        this.testActuatorAwaiting = true;
         // panel stays open; MQTT hook will flip testActuatorPending when CONFIGUREPENDING arrives
       },
 
       cancelTestActuator() {
         this.testActuatorActive = false;
         this.testActuatorPending = false;
+        this.testActuatorAwaiting = false;
         this.testActuatorFormError = '';
       },
 
@@ -2201,6 +2226,7 @@
       cancelActuatorTest() {
         this.sendCmd(this.testActuatorNodeId, { cmd: 'Reset' });
         this.testActuatorPending = false;
+        this.testActuatorAwaiting = false;
         this.testActuatorActive = false;
       },
 

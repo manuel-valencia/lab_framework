@@ -256,6 +256,17 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             MAX_AMPLITUDE = obj.cfg.hardware.maxAmplitude;   % V  (DAQ output voltage limit)
             MAX_FREQUENCY = obj.cfg.hardware.maxFrequency;   % Hz (linear actuator limit)
 
+            % --- Default activeProbes from stored state if not provided ---
+            % Actuator-only tests do not require the caller to specify probes;
+            % use whatever was last calibrated, or all 8 probes as final fallback.
+            if ~isfield(params, 'activeProbes') || isempty(params.activeProbes)
+                if ~isempty(obj.activeProbes)
+                    params.activeProbes = obj.activeProbes;
+                else
+                    params.activeProbes = 1:8;
+                end
+            end
+
             % --- Common checks (all signal types) ---
             hasProbes   = isfield(params, 'activeProbes') && isnumeric(params.activeProbes) ...
                           && ~isempty(params.activeProbes) ...

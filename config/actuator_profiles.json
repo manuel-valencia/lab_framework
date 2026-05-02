@@ -7,13 +7,6 @@
         "label": "Sinusoidal",
         "fields": [
           {
-            "key": "activeProbes",
-            "type": "int_array",
-            "label": "Active probes",
-            "placeholder": "e.g. 1,3,5",
-            "required": true
-          },
-          {
             "key": "duration",
             "type": "number",
             "label": "Duration",
@@ -47,13 +40,6 @@
         "label": "Bretschneider (irregular)",
         "fields": [
           {
-            "key": "activeProbes",
-            "type": "int_array",
-            "label": "Active probes",
-            "placeholder": "e.g. 1,3,5",
-            "required": true
-          },
-          {
             "key": "duration",
             "type": "number",
             "label": "Duration",
@@ -86,13 +72,6 @@
         "id": "pulse_sinusoidal",
         "label": "Pulse Sinusoidal",
         "fields": [
-          {
-            "key": "activeProbes",
-            "type": "int_array",
-            "label": "Active probes",
-            "placeholder": "e.g. 1,3,5",
-            "required": true
-          },
           {
             "key": "duration",
             "type": "number",
@@ -134,13 +113,6 @@
         "id": "dual_pulse",
         "label": "Dual Pulse",
         "fields": [
-          {
-            "key": "activeProbes",
-            "type": "int_array",
-            "label": "Active probes",
-            "placeholder": "e.g. 1,3,5",
-            "required": true
-          },
           {
             "key": "duration",
             "type": "number",
