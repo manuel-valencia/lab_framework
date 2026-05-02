@@ -86,6 +86,11 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
         paddleChannel       % output channel ID (from config)
         streamListener      % logical flag: true when ScansAvailableFcn is active
         outputChannels      % cell array of field names to keep in output (empty = all)
+
+        % DC offset reference captured at the start of each TestSensor call.
+        % Subtracted in streaming callbacks to zero-centre live probe readings.
+        % handleRun is unaffected — it mean-centres its own full-run data independently.
+        probeZeroRef        % 1x8 double (volts × gains), defaults to zeros
     end
 
     methods
@@ -109,6 +114,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.allPaddleSignals = {};
             obj.streamListener = false;
             obj.outputChannels    = {};
+            obj.probeZeroRef      = zeros(1, 8);
 
             nodeDir = fileparts(mfilename('fullpath'));
             obj.logDir = fullfile(nodeDir, 'waveMakerProbeNodeLogs');
@@ -578,6 +584,23 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                     return;
                 end
 
+                % Capture a 1-second DC reference before streaming begins.
+                % This measures the static probe offset (electrical bias + gain residual)
+                % so each live reading can be zero-centred by subtraction.
+                try
+                    refBuf = zeros(obj.sampleRate, 1);   % 1-second zero output while sampling
+                    preload(obj.daqSession, refBuf);
+                    start(obj.daqSession, "repeatoutput");
+                    refRead = read(obj.daqSession, obj.sampleRate);   % 1 s of quiet data
+                    stop(obj.daqSession);
+                    flush(obj.daqSession);
+                    obj.probeZeroRef = mean(refRead.Variables, 1) .* obj.probeGains;  % 1x8
+                    obj.log("INFO", "TestSensor: DC zero reference captured.");
+                catch ME
+                    obj.probeZeroRef = zeros(1, 8);
+                    obj.log("WARN", sprintf("TestSensor: DC reference capture failed (%s) — using zeros.", ME.message));
+                end
+
                 blockSize = 5;
                 zeroBuf = zeros(obj.sampleRate, 1);   % 1-second zero output (repeats)
                 preload(obj.daqSession, zeroBuf);
@@ -907,7 +930,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 % read() pulls from the live buffer without blocking the MATLAB thread.
                 rawRead = read(obj.daqSession, blockSize);
                 rawArr  = mean(rawRead.Variables, 1);   % 1x8 mean
-                heights = rawArr .* obj.probeGains;
+                heights = rawArr .* obj.probeGains - obj.probeZeroRef;   % zero-centred
                 reading = struct('type','wave_height','units','m', ...
                     'timestamp', string(datetime('now','Format','yyyy-MM-dd HH:mm:ss.SSS')));
                 for k = obj.activeProbes(:)'
@@ -930,7 +953,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             try
                 rawRead = read(src, blockSize);
                 rawArr  = mean(rawRead.Variables, 1);   % 1x8 mean
-                heights = rawArr .* obj.probeGains;
+                heights = rawArr .* obj.probeGains - obj.probeZeroRef;   % zero-centred
                 reading = struct('type','wave_height','units','m', ...
                     'timestamp', string(datetime('now','Format','yyyy-MM-dd HH:mm:ss.SSS')));
                 for k = obj.activeProbes(:)'
