@@ -1043,6 +1043,19 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             for k = obj.activeProbes(:)'
                 values{end+1} = num2cell(heightData(:, k)); %#ok<AGROW>
             end
+
+            % For wave runs (non-zero amplitude), include the paddle voltage signal
+            if obj.amplitude > 0 && ~isempty(obj.paddleSignal)
+                paddleOut = obj.paddleSignal(:);
+                if numel(paddleOut) > nAcq
+                    paddleOut = paddleOut(1:nAcq);
+                elseif numel(paddleOut) < nAcq
+                    paddleOut(end+1:nAcq) = 0;
+                end
+                fields{end+1} = 'paddleVoltage_V';
+                values{end+1} = num2cell(paddleOut);
+            end
+
             args = [fields; values];
             obj.experimentData = struct(args{:});
 

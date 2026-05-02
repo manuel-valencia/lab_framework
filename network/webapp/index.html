@@ -553,8 +553,15 @@
                     @click="expConfigure()">
               Configure
             </button>
-            <button class="btn btn-primary"
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes'"
                     :disabled="(nodes[expNodeTarget]?.state) !== 'CONFIGUREPENDING'"
+                    @click="expPreviewSignal()">
+              &#128065; Preview Signal
+            </button>
+            <button class="btn btn-primary"
+                    :disabled="(nodes[expNodeTarget]?.state) !== 'CONFIGUREPENDING' ||
+                               (expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes' && !expPreviewSeen)"
                     @click="playTrainWhistle(); sendCmd(expNodeTarget, {cmd:'RunValid'}); expDataAvailable=false">
               &#9654; Run
             </button>
@@ -859,7 +866,8 @@
       expDebugOpen:     false,
       expDebugLogs:     {},   // { nodeId: [{level, text}, ...] }
       MAX_DEBUG_LINES:  100,
-      expSubType:       '',
+      expSubType:        '',
+      expPreviewSeen:    false,
       expWaveSignalType: 'sinusoidal',
       expWaveFormValues: {},
       expWaveFormError:  '',
@@ -1135,6 +1143,7 @@
       expConfigure() {
         if (!this.expNodeTarget || !this.expNodeType) return;
         this.expWaveFormError = '';
+        this.expPreviewSeen = false;
         const fields = EXP_FORMS[this.expNodeType]?.fields || [];
         // Start with extra params (e.g. outputChannels) then overlay form fields
         const params = { ...this.expExtraParams };
@@ -1165,6 +1174,24 @@
         this.sendCmd(this.expNodeTarget, { cmd: 'Run', params });
         this.expFlash = `Configure sent to ${this.expNodeTarget} — awaiting CONFIGUREPENDING…`;
         setTimeout(() => { this.expFlash = ''; }, 5000);
+      },
+
+      async expPreviewSignal() {
+        try {
+          const name = (this.expFields?.name || 'wave_run_001').trim();
+          const previewTag = 'preview_' + name.replace(/\W/g, '_');
+          const url = `http://${location.hostname}:5000/data/${this.expNodeTarget}?experimentName=${encodeURIComponent(previewTag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(this.expNodeTarget, 'Preview: ' + name, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+          this.expPreviewSeen = true;
+        } catch (e) {
+          this.expFlash = 'Error fetching preview: ' + e.message;
+          setTimeout(() => { this.expFlash = ''; }, 5000);
+        }
       },
 
       getExpWaveSignalTypes() {
