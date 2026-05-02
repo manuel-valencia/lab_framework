@@ -218,7 +218,6 @@ classdef CarriageNodeManager < ExperimentManager
             obj.rawData        = [];
             obj.experimentData = [];
             obj.isCollecting   = false;
-            obj.outputChannels = {};
 
             if isfield(obj.experimentSpec.params, 'experiments')
                 currentParams = obj.experimentSpec.params.experiments(obj.currentExperimentIndex);
@@ -227,6 +226,16 @@ classdef CarriageNodeManager < ExperimentManager
             end
 
             obj.duration = currentParams.duration;
+
+            % Read outputChannels from this sub-experiment's params so each
+            % run in a multi-run session gets its own filter independently
+            % of what configureHardware last touched.
+            if isfield(currentParams, 'outputChannels') && ~isempty(currentParams.outputChannels)
+                obj.outputChannels = cellstr(currentParams.outputChannels);
+            else
+                obj.outputChannels = {};   % empty = keep all channels
+            end
+
             obj.log("INFO", sprintf("Carriage experiment ready: duration=%.1f s.", obj.duration));
         end
 

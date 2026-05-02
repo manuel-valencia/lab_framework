@@ -1,5 +1,5 @@
 {
-  "_description": "Force and moment data only (no sync pulse or motion sensors). Acquires Fx, Fy, Fz, Mx, My, Mz for the specified duration. Sync and GoBilda distance channels are still sampled by the DAQ but are stripped before saving and sending — keeps file size small when motion data is not needed.",
+  "_description": "Force and moment data only (no sync pulse or motion sensors). Acquires Fx, Fy, Fz, Mx, My, Mz for the specified duration. Sync and GoBilda distance channels are still sampled by the DAQ but are stripped before saving and sending - keeps file size small when motion data is not needed.",
   "_nodeType": "carriageNode",
   "name": "force_only_001",
   "duration": 30,

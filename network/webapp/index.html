@@ -687,6 +687,7 @@
       expNodeType:      '',
       expDescription:   '',
       expFields:        {},
+      expExtraParams:   {},   // non-form fields from template (e.g. outputChannels)
       expFlash:         '',
       expDataAvailable: false,
       expDebugOpen:     false,
@@ -868,12 +869,21 @@
           if (data._nodeType) {
             this.expNodeType    = data._nodeType;
             this.expDescription = data._description || '';
-            const fields = EXP_FORMS[data._nodeType]?.fields || [];
+            const fields    = EXP_FORMS[data._nodeType]?.fields || [];
+            const formKeys  = new Set(fields.map(f => f.key));
+            // Seed visible form fields from template values
             const seeded = {};
             fields.forEach(f => {
               seeded[f.key] = data[f.key] !== undefined ? String(data[f.key]) : '';
             });
-            this.expFields        = seeded;
+            this.expFields = seeded;
+            // Collect extra (non-meta, non-form) keys — forwarded verbatim to node params
+            // Examples: outputChannels, settleCheck, etc.
+            const extra = {};
+            for (const [k, v] of Object.entries(data)) {
+              if (!k.startsWith('_') && !formKeys.has(k)) extra[k] = v;
+            }
+            this.expExtraParams   = extra;
             this.expDataAvailable = false;
           }
           this.activeTab = 'Experiment';
@@ -885,7 +895,8 @@
       expConfigure() {
         if (!this.expNodeTarget || !this.expNodeType) return;
         const fields = EXP_FORMS[this.expNodeType]?.fields || [];
-        const params = {};
+        // Start with extra params (e.g. outputChannels) then overlay form fields
+        const params = { ...this.expExtraParams };
         for (const f of fields) {
           const val = this.expFields[f.key];
           if (val === '' || val === undefined) continue;
@@ -988,6 +999,8 @@
         const eNode   = JSON.stringify(nodeId);
         const eCsv    = JSON.stringify(csvContent);
         const eXLabel = JSON.stringify(xIdx >= 0 ? 'nTime' : 'sampleIndex');
+        // Capture hostname NOW (parent page context) — blob: pages have empty location.hostname
+        const eHost   = JSON.stringify(location.hostname || 'localhost');
         const nSamp = rows.length;
         const nChan = plotCols.length;
 
@@ -1035,7 +1048,7 @@
     const csv    = ${eCsv};
     const name   = ${eName};
     const xLabel = ${eXLabel};
-    const matUrl = \`http://\${location.hostname}:5000/api/convert/mat\`;
+    const matUrl = 'http://' + ${eHost} + ':5000/api/convert/mat';
     const chart  = new Chart(document.getElementById('c').getContext('2d'), {
       type: 'line', data: cfg,
       options: {
