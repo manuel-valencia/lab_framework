@@ -520,8 +520,49 @@
             &#8505; Paddle outputs 0&nbsp;V — the wavemaker DAQ channel stays active but produces no motion.
           </div>
 
-          <!-- waveMakerProbeNode: wave_and_probes — signal type + params -->
-          <div x-show="expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes'"
+          <!-- fullRun: carriageNode + waveMakerProbeNode sub-panels -->
+          <div x-show="expNodeType === 'fullRun'" style="margin-top:10px">
+            <!-- carriageNode settings -->
+            <div style="margin-bottom:10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+              <div class="section-title" style="margin-bottom:8px">carriageNode settings</div>
+              <div class="form-row">
+                <label>Sample rate (Hz)</label>
+                <input type="number" x-model="expFields.sampleRate" placeholder="Default: 50 Hz" />
+                <div class="exp-field-hint">Leave blank to use hardware default (50 Hz)</div>
+              </div>
+              <label style="margin-top:8px;display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem;color:var(--text)">
+                <input type="checkbox" x-model="expFullLaserEnabled" style="width:auto" />
+                Include laser motion channels (heave / pitch / roll)
+              </label>
+              <div x-show="!expFullLaserEnabled"
+                   style="margin-top:6px;font-size:.75rem;color:#fcd34d;padding:6px 8px;background:#2d2408;border:1px solid #4a3810;border-radius:4px">
+                &#9888; Laser channels excluded — output will contain Fx, Fy, Fz, Mx, My, Mz only.
+              </div>
+            </div>
+            <!-- waveMakerProbeNode settings -->
+            <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+              <div class="section-title" style="margin-bottom:8px">waveMakerProbeNode settings</div>
+              <div class="form-row">
+                <label>Active probes <span style="color:#fca5a5"> *</span></label>
+                <input type="text" x-model="expFields.activeProbes" placeholder="e.g. 1,3,5" />
+                <div class="exp-field-hint">Comma-separated probe indices 1–8</div>
+              </div>
+              <div class="form-row" style="margin-top:6px">
+                <label>Paddle mode</label>
+                <select x-model="expFullPaddleMode" @change="onExpFullPaddleModeChange()">
+                  <option value="none">No paddle movement (probes only)</option>
+                  <option value="wave">Generate wave signal</option>
+                </select>
+              </div>
+              <div x-show="expFullPaddleMode === 'none'"
+                   style="margin-top:6px;padding:6px 10px;background:#1a2535;border:1px solid #2d4a6b;border-radius:4px;font-size:.75rem;color:#93c5fd">
+                &#8505; Paddle outputs 0&nbsp;V — wavemaker DAQ channel stays active but produces no motion.
+              </div>
+            </div>
+          </div>
+
+          <!-- waveMakerProbeNode/fullRun: wave signal type + params -->
+          <div x-show="(expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes') || (expNodeType === 'fullRun' && expFullPaddleMode === 'wave')"
                style="margin-top:8px">
             <div class="section-title">Wave signal</div>
             <div class="form-row">
@@ -551,39 +592,73 @@
           <!-- Action buttons -->
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
             <button class="btn btn-primary"
-                    :disabled="!expNodeTarget || !expNodeType"
-                    @click="expConfigure()">
+                    :disabled="expNodeType === 'fullRun'
+                               ? (!nodes['carriageNode']?.online || !nodes['waveMakerProbeNode']?.online)
+                               : (!expNodeTarget || !expNodeType)"
+                    @click="expNodeType === 'fullRun' ? expFullConfigure() : expConfigure()">
               Configure
             </button>
             <button class="btn btn-secondary"
-                    x-show="expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes'"
-                    :disabled="(nodes[expNodeTarget]?.state) !== 'CONFIGUREPENDING'"
-                    @click="expPreviewSignal()">
+                    x-show="(expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes') || (expNodeType === 'fullRun' && expFullPaddleMode === 'wave')"
+                    :disabled="expNodeType === 'fullRun' ? !expFullWaveReady : nodes[expNodeTarget]?.state !== 'CONFIGUREPENDING'"
+                    @click="expPreviewSignal(expNodeType === 'fullRun' ? 'waveMakerProbeNode' : null)">
               &#128065; Preview Signal
             </button>
             <button class="btn btn-primary"
-                    :disabled="(nodes[expNodeTarget]?.state) !== 'CONFIGUREPENDING' ||
-                               (expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes' && !expPreviewSeen)"
-                    @click="playTrainWhistle(); sendCmd(expNodeTarget, {cmd:'RunValid'}); expDataAvailable=false">
+                    :disabled="expNodeType === 'fullRun'
+                               ? (!expFullCarriageReady || !expFullWaveReady || (expFullPaddleMode === 'wave' && !expFullPreviewSeen))
+                               : (nodes[expNodeTarget]?.state !== 'CONFIGUREPENDING' ||
+                                  (expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes' && !expPreviewSeen))"
+                    @click="expNodeType === 'fullRun' ? expFullRun() : (playTrainWhistle(), sendCmd(expNodeTarget, {cmd:'RunValid'}), expDataAvailable=false)">
               &#9654; Run
             </button>
             <button class="btn btn-danger"
-                    :disabled="!['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes[expNodeTarget]?.state)"
-                    @click="sendCmd(expNodeTarget, {cmd:'Abort'})">
+                    :disabled="expNodeType === 'fullRun'
+                               ? (!['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes['carriageNode']?.state) && !['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes['waveMakerProbeNode']?.state))
+                               : !['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes[expNodeTarget]?.state)"
+                    @click="expNodeType === 'fullRun' ? expFullAbort() : sendCmd(expNodeTarget, {cmd:'Abort'})">
               &#9632; Abort
             </button>
+            <!-- Single-node: View Plot / Download -->
             <button class="btn btn-secondary"
+                    x-show="expNodeType !== 'fullRun'"
                     :disabled="!expDataAvailable"
                     @click="expOpenPlot()">
               &#128202; View Plot
             </button>
             <button class="btn btn-secondary"
+                    x-show="expNodeType !== 'fullRun'"
                     :disabled="!expDataAvailable"
                     @click="expDownload()">
               &#8595; Download
             </button>
+            <!-- Full-run: per-node View Plot / Download -->
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'fullRun'"
+                    :disabled="!expFullCarriageData"
+                    @click="expOpenPlot('carriageNode')">
+              &#128202; Carriage Plot
+            </button>
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'fullRun'"
+                    :disabled="!expFullCarriageData"
+                    @click="expDownload('carriageNode')">
+              &#8595; Carriage CSV
+            </button>
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'fullRun'"
+                    :disabled="!expFullWaveData"
+                    @click="expOpenPlot('waveMakerProbeNode')">
+              &#128202; Wave Plot
+            </button>
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'fullRun'"
+                    :disabled="!expFullWaveData"
+                    @click="expDownload('waveMakerProbeNode')">
+              &#8595; Wave CSV
+            </button>
             <button class="btn" :class="expDebugOpen ? 'btn-danger' : 'btn-secondary'"
-                    x-show="expNodeTarget"
+                    x-show="expNodeTarget || expNodeType === 'fullRun'"
                     @click="expDebugOpen = !expDebugOpen"
                     x-text="expDebugOpen ? '&#128269; Hide debug' : '&#128269; Debug'"></button>
           </div>
@@ -594,8 +669,8 @@
       </div>
 
       <!-- Debug terminals — appear below both cards -->
-      <div class="exp-debug-wrap" x-show="expDebugOpen && expNodeTarget">
-        <template x-for="nodeId in [expNodeTarget].filter(Boolean)" :key="nodeId">
+      <div class="exp-debug-wrap" x-show="expDebugOpen && (expNodeTarget || expNodeType === 'fullRun')">
+        <template x-for="nodeId in (expNodeType === 'fullRun' ? ['carriageNode', 'waveMakerProbeNode'] : [expNodeTarget].filter(Boolean))" :key="nodeId">
           <div class="exp-debug-panel">
             <div class="exp-debug-header">
               <span x-text="'Debug: '+nodeId"></span>
@@ -784,6 +859,12 @@
         { key: 'duration',     label: 'Duration (s)',   type: 'number', required: true,  hint: 'Total acquisition time in seconds' },
         { key: 'activeProbes', label: 'Active probes',  type: 'text',   required: true,  hint: 'Comma-separated probe indices 1–8, e.g. 1,3,5' },
       ]
+    },
+    fullRun: {
+      fields: [
+        { key: 'name',     label: 'Run name',     type: 'text',   required: false, hint: 'e.g. full_run_001' },
+        { key: 'duration', label: 'Duration (s)', type: 'number', required: true,  hint: 'Acquisition time in seconds (applied to both nodes)' },
+      ]
     }
   };
 
@@ -873,6 +954,15 @@
       expWaveSignalType: 'sinusoidal',
       expWaveFormValues: {},
       expWaveFormError:  '',
+
+      // ── Full-run experiment (carriageNode + waveMakerProbeNode simultaneously) ──
+      expFullCarriageReady:  false,   // carriageNode is in CONFIGUREPENDING
+      expFullWaveReady:      false,   // waveMakerProbeNode is in CONFIGUREPENDING
+      expFullPreviewSeen:    false,   // wave preview has been viewed
+      expFullPaddleMode:     'none',  // 'none' = zero paddle | 'wave' = generate signal
+      expFullLaserEnabled:   true,    // include heave/pitch/roll channels from carriageNode
+      expFullCarriageData:   false,   // carriageNode run complete (DONE)
+      expFullWaveData:       false,   // waveMakerProbeNode run complete (DONE)
 
       // ── Experiment progress bar ────────────────────────────────
       expProgress:         0,     // 0-100 percent fill
@@ -995,6 +1085,36 @@
             this.expFlash = 'Run complete — data ready.';
             setTimeout(() => { this.expFlash = ''; }, 6000);
           }
+          // fullRun: track per-node CONFIGUREPENDING / DONE; warn on unexpected IDLE/ERROR
+          if (!isHeartbeat && this.expNodeType === 'fullRun') {
+            if (nodeId === 'carriageNode') {
+              if (msg.state === 'CONFIGUREPENDING') {
+                this.expFullCarriageReady = true;
+              } else if (msg.state === 'DONE') {
+                this.expFullCarriageData = true;
+                this.expFlash = 'carriageNode run complete — data ready.';
+                setTimeout(() => { this.expFlash = ''; }, 6000);
+              } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expFullCarriageReady) {
+                this.expFullCarriageReady = false;
+                this.expFlash = '⚠ carriageNode returned to IDLE — re-configure before running.';
+                setTimeout(() => { this.expFlash = ''; }, 8000);
+              }
+            }
+            if (nodeId === 'waveMakerProbeNode') {
+              if (msg.state === 'CONFIGUREPENDING') {
+                this.expFullWaveReady = true;
+              } else if (msg.state === 'DONE') {
+                this.expFullWaveData = true;
+                this.expFlash = 'waveMakerProbeNode run complete — data ready.';
+                setTimeout(() => { this.expFlash = ''; }, 6000);
+              } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expFullWaveReady) {
+                this.expFullWaveReady = false;
+                this.expFullPreviewSeen = false;
+                this.expFlash = '⚠ waveMakerProbeNode returned to IDLE — re-configure before running.';
+                setTimeout(() => { this.expFlash = ''; }, 8000);
+              }
+            }
+          }
           // TestActuator: watch for CONFIGUREPENDING / IDLE / ERROR to drive wizard state
           if (!isHeartbeat && this.testActuatorActive && nodeId === this.testActuatorNodeId) {
             if (msg.state === 'CONFIGUREPENDING') {
@@ -1055,7 +1175,9 @@
           }
           // Push to experiment debug terminal if open for this node
           if (this.expDebugOpen) {
-            const expNodes = [this.expNodeTarget].filter(Boolean);
+            const expNodes = this.expNodeType === 'fullRun'
+              ? ['carriageNode', 'waveMakerProbeNode']
+              : [this.expNodeTarget].filter(Boolean);
             if (expNodes.includes(nodeId)) {
               if (!this.expDebugLogs[nodeId]) this.expDebugLogs[nodeId] = [];
               const ts = new Date().toLocaleTimeString();
@@ -1153,6 +1275,28 @@
               this.expWaveSignalType = 'sinusoidal';
               this._initExpWaveFormDefaults();
             }
+            // fullRun: seed carriageNode + waveMakerProbeNode sub-panel fields
+            if (data._nodeType === 'fullRun') {
+              this.expFields.sampleRate   = String(data.carriageNode?.sampleRate || '');
+              this.expFields.activeProbes = data.waveMakerProbeNode?.activeProbes || '';
+              this.expFullLaserEnabled    = data.carriageNode?.laserEnabled !== false;
+              this.expFullPaddleMode      = data.waveMakerProbeNode?.paddleMode || 'none';
+              this.expFullCarriageReady   = false;
+              this.expFullWaveReady       = false;
+              this.expFullPreviewSeen     = false;
+              this.expFullCarriageData    = false;
+              this.expFullWaveData        = false;
+              if (this.expFullPaddleMode === 'wave') {
+                if (!Object.keys(this.actuatorProfiles).length) {
+                  try {
+                    const r = await fetch('/api/actuator-profiles');
+                    if (r.ok) this.actuatorProfiles = await r.json();
+                  } catch (_e) {}
+                }
+                this.expWaveSignalType = 'sinusoidal';
+                this._initExpWaveFormDefaults();
+              }
+            }
           }
           this.activeTab = 'Experiment';
         } catch (e) {
@@ -1196,18 +1340,23 @@
         setTimeout(() => { this.expFlash = ''; }, 5000);
       },
 
-      async expPreviewSignal() {
+      async expPreviewSignal(nodeId = null) {
+        const targetNode = nodeId || this.expNodeTarget;
         try {
           const name = (this.expFields?.name || 'wave_run_001').trim();
           const previewTag = 'preview_' + name.replace(/\W/g, '_');
-          const url = `http://${location.hostname}:5000/data/${this.expNodeTarget}?experimentName=${encodeURIComponent(previewTag)}`;
+          const url = `http://${location.hostname}:5000/data/${targetNode}?experimentName=${encodeURIComponent(previewTag)}`;
           const res  = await fetch(url);
           const resp = await res.json();
           if (!res.ok) throw new Error(resp.error || res.statusText);
           const { columns, rows } = this._parseRestResponse(resp);
-          const html = this.buildPlotHtml(this.expNodeTarget, 'Preview: ' + name, columns, rows);
+          const html = this.buildPlotHtml(targetNode, 'Preview: ' + name, columns, rows);
           window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
-          this.expPreviewSeen = true;
+          if (this.expNodeType === 'fullRun') {
+            this.expFullPreviewSeen = true;
+          } else {
+            this.expPreviewSeen = true;
+          }
         } catch (e) {
           this.expFlash = 'Error fetching preview: ' + e.message;
           setTimeout(() => { this.expFlash = ''; }, 5000);
@@ -1265,20 +1414,103 @@
         return null;
       },
 
-      async expDownload() {
+      onExpFullPaddleModeChange() {
+        this.expWaveFormError = '';
+        if (this.expFullPaddleMode === 'wave') {
+          this.expWaveSignalType = 'sinusoidal';
+          this._initExpWaveFormDefaults();
+        }
+      },
+
+      expFullConfigure() {
+        const name     = (this.expFields?.name || '').trim();
+        const duration = Number(this.expFields?.duration);
+        if (!duration || isNaN(duration) || duration <= 0) {
+          this.expFlash = 'Error: Duration is required.';
+          setTimeout(() => { this.expFlash = ''; }, 4000);
+          return;
+        }
+        // carriageNode params
+        const carriageParams = {
+          ...(name ? { name } : {}),
+          duration,
+          ...(this.expFields?.sampleRate ? { sampleRate: Number(this.expFields.sampleRate) } : {}),
+        };
+        if (!this.expFullLaserEnabled) {
+          carriageParams.outputChannels = ['nTime', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'];
+        }
+        // waveMakerProbeNode params
+        const probeRaw = String(this.expFields?.activeProbes || '').trim();
+        if (!probeRaw) {
+          this.expFlash = 'Error: Active probes are required for waveMakerProbeNode.';
+          setTimeout(() => { this.expFlash = ''; }, 4000);
+          return;
+        }
+        const activeProbes = probeRaw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n >= 1 && n <= 8);
+        if (!activeProbes.length) {
+          this.expFlash = 'Error: Enter at least one valid probe index (1–8).';
+          setTimeout(() => { this.expFlash = ''; }, 4000);
+          return;
+        }
+        const waveParams = {
+          ...(name ? { name } : {}),
+          duration,
+          activeProbes,
+        };
+        if (this.expFullPaddleMode === 'none') {
+          waveParams.signalType = 'sinusoidal';
+          waveParams.amplitude  = 0;
+          waveParams.frequency  = 0;
+        } else {
+          this.expWaveFormError = '';
+          const err = this._mergeExpWaveParams(waveParams);
+          if (err) { this.expFlash = 'Error: ' + err; return; }
+        }
+        // Reset readiness + data flags
+        this.expFullCarriageReady = false;
+        this.expFullWaveReady     = false;
+        this.expFullPreviewSeen   = false;
+        this.expFullCarriageData  = false;
+        this.expFullWaveData      = false;
+        // Clear debug terminals for both nodes
+        this.expDebugLogs['carriageNode']       = [];
+        this.expDebugLogs['waveMakerProbeNode'] = [];
+        this.expDebugLogs = { ...this.expDebugLogs };
+        // Send configure commands individually
+        this.sendCmd('carriageNode',       { cmd: 'Run', params: carriageParams });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'Run', params: waveParams });
+        this.expFlash = 'Configure sent to both nodes — awaiting CONFIGUREPENDING…';
+        setTimeout(() => { this.expFlash = ''; }, 6000);
+      },
+
+      expFullRun() {
+        this.playTrainWhistle();
+        this.expFullCarriageData = false;
+        this.expFullWaveData     = false;
+        this.sendCmd('carriageNode',       { cmd: 'RunValid' });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'RunValid' });
+      },
+
+      expFullAbort() {
+        this.sendCmd('carriageNode',       { cmd: 'Abort' });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'Abort' });
+      },
+
+      async expDownload(nodeId = null) {
+        const targetNode = nodeId || this.expNodeTarget;
         try {
-          const url = `http://${location.hostname}:5000/data/${this.expNodeTarget}?latest=true`;
+          const url = `http://${location.hostname}:5000/data/${targetNode}?latest=true`;
           const res  = await fetch(url);
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || res.statusText);
           let content, filename, mime;
           if (data.format === 'csv') {
             content  = data.csv;
-            filename = `${this.expNodeTarget}_latest.csv`;
+            filename = `${targetNode}_latest.csv`;
             mime     = 'text/csv';
           } else {
             content  = JSON.stringify(data.data, null, 2);
-            filename = `${this.expNodeTarget}_latest.json`;
+            filename = `${targetNode}_latest.json`;
             mime     = 'application/json';
           }
           const blob = new Blob([content], { type: mime });
@@ -1294,15 +1526,16 @@
         }
       },
 
-      async expOpenPlot() {
+      async expOpenPlot(nodeId = null) {
+        const targetNode = nodeId || this.expNodeTarget;
         try {
-          const url = `http://${location.hostname}:5000/data/${this.expNodeTarget}?latest=true`;
+          const url = `http://${location.hostname}:5000/data/${targetNode}?latest=true`;
           const res  = await fetch(url);
           const resp = await res.json();
           if (!res.ok) throw new Error(resp.error || res.statusText);
-          const runName = this.expFields?.name || `${this.expNodeTarget}_latest`;
+          const runName = this.expFields?.name || `${targetNode}_latest`;
           const { columns, rows } = this._parseRestResponse(resp);
-          const html = this.buildPlotHtml(this.expNodeTarget, runName, columns, rows);
+          const html = this.buildPlotHtml(targetNode, runName, columns, rows);
           window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
         } catch (e) {
           this.expFlash = 'Error opening plot: ' + e.message;
