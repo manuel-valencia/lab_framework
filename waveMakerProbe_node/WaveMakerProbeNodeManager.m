@@ -992,7 +992,7 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
 
                 tRemain = obj.duration - toc(tStart);
                 thisSec = min(chunkSec, max(tRemain, 0));
-                if thisSec <= 0
+                if thisSec < (1 / obj.sampleRate)   % less than one sample period — exit cleanly
                     break;
                 end
 

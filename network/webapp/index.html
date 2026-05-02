@@ -1205,7 +1205,8 @@
       getExpWaveFields() {
         const types = this.getExpWaveSignalTypes();
         const st = types.find(s => s.id === this.expWaveSignalType);
-        return st ? st.fields : [];
+        // duration is set by the base experiment form — filter it out here to avoid collision
+        return st ? st.fields.filter(f => f.key !== 'duration') : [];
       },
 
       onExpWaveSignalTypeChange() {
