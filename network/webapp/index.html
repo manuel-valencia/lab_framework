@@ -1025,6 +1025,7 @@
     <select id="fmt" class="fmt">
       <option value="csv">CSV</option>
       <option value="json">JSON</option>
+      <option value="mat">MAT (MATLAB)</option>
     </select>
     <button class="btn sec" onclick="dl('full')">&#8595; Download Full</button>
     <button class="btn"     onclick="dl('seen')">&#8595; Download Seen</button>
@@ -1034,6 +1035,7 @@
     const csv    = ${eCsv};
     const name   = ${eName};
     const xLabel = ${eXLabel};
+    const matUrl = \`http://\${location.hostname}:5000/api/convert/mat\`;
     const chart  = new Chart(document.getElementById('c').getContext('2d'), {
       type: 'line', data: cfg,
       options: {
@@ -1059,41 +1061,48 @@
     });
     function dl(mode) {
       const fmt = document.getElementById('fmt').value;
-      let content, ext, mime;
+      // --- Collect columns + rows for the requested mode ---
+      let hdrs, cols;
       if (mode === 'seen') {
-        // Collect visible datasets + x-axis column
-        const hdrs = [xLabel];
-        const cols = [cfg.labels];
+        hdrs = [xLabel];
+        cols = [cfg.labels.map(Number)];
         cfg.datasets.forEach((ds, i) => {
           if (!chart.data.datasets[i].hidden) { hdrs.push(ds.label); cols.push(ds.data); }
         });
-        if (fmt === 'json') {
-          const rowObjs = cfg.labels.map((_, ri) => {
-            const o = {};
-            hdrs.forEach((h, ci) => { o[h] = cols[ci][ri]; });
-            return o;
-          });
-          content = JSON.stringify(rowObjs, null, 2); ext = 'json'; mime = 'application/json';
-        } else {
-          const rows = cfg.labels.map((_, ri) => hdrs.map((_, ci) => String(cols[ci][ri])).join(','));
-          content = [hdrs.join(','), ...rows].join('\\n'); ext = 'csv'; mime = 'text/csv';
-        }
       } else {
-        // Full download
-        if (fmt === 'json') {
-          const lines = csv.trim().split('\\n');
-          const hdrs  = lines[0].split(',');
-          const rowObjs = lines.slice(1).map(l => {
-            const vals = l.split(','); const o = {};
-            hdrs.forEach((h, i) => { const n = Number(vals[i]); o[h] = isNaN(n) ? vals[i] : n; });
-            return o;
-          });
-          content = JSON.stringify(rowObjs, null, 2); ext = 'json'; mime = 'application/json';
-        } else {
-          content = csv; ext = 'csv'; mime = 'text/csv';
-        }
+        // full: rebuild from embedded csv
+        const lines = csv.trim().split('\\n');
+        hdrs = lines[0].split(',');
+        const numRows = lines.slice(1).map(l => l.split(',').map(v => { const n = Number(v); return isNaN(n) ? v : n; }));
+        cols = hdrs.map((_, ci) => numRows.map(r => r[ci]));
       }
       const suffix = mode === 'seen' ? '_seen' : '';
+      if (fmt === 'mat') {
+        // Build row-major data array for server
+        const rowData = cols[0].map((_, ri) => hdrs.map((_, ci) => { const v = cols[ci][ri]; return typeof v === 'number' ? v : parseFloat(v) || 0; }));
+        const btn = event.target; btn.disabled = true; btn.textContent = 'Converting\u2026';
+        fetch(matUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name + suffix, columns: hdrs, data: rowData }),
+        })
+        .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.error || r.statusText); }); return r.blob(); })
+        .then(blob => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob); a.download = name + suffix + '.mat'; a.click(); URL.revokeObjectURL(a.href);
+        })
+        .catch(e => alert('MAT download failed: ' + e.message))
+        .finally(() => { btn.disabled = false; btn.textContent = mode === 'seen' ? '\u2193 Download Seen' : '\u2193 Download Full'; });
+        return;
+      }
+      let content, ext, mime;
+      if (fmt === 'json') {
+        const rowObjs = cols[0].map((_, ri) => { const o = {}; hdrs.forEach((h, ci) => { o[h] = cols[ci][ri]; }); return o; });
+        content = JSON.stringify(rowObjs, null, 2); ext = 'json'; mime = 'application/json';
+      } else {
+        const rows = cols[0].map((_, ri) => hdrs.map((_, ci) => String(cols[ci][ri])).join(','));
+        content = [hdrs.join(','), ...rows].join('\\n'); ext = 'csv'; mime = 'text/csv';
+      }
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([content], { type: mime }));
       a.download = name + suffix + '.' + ext; a.click(); URL.revokeObjectURL(a.href);

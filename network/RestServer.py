@@ -62,12 +62,19 @@ Notes:
 ----------------------------------------------------------
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from datetime import datetime
+import io
 import os
 import json
 import shutil
 import glob
+import numpy as np
+try:
+    from scipy.io import savemat as _scipy_savemat
+    _SCIPY_AVAILABLE = True
+except ImportError:
+    _SCIPY_AVAILABLE = False
 
 TEMP_DIR = os.path.join(os.path.dirname(__file__), "tempRestData")
 if os.path.exists(TEMP_DIR):
@@ -87,6 +94,76 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     return response
+
+#----------------------------------------------------------
+
+@app.route('/api/convert/mat', methods=['POST', 'OPTIONS'])
+def convert_to_mat():
+    """
+    POST /api/convert/mat
+    Accepts a JSON body describing tabular data and returns a binary .mat file.
+
+    Request body (JSON):
+        {
+          "name":    "run_name",          // used as the .mat filename stem
+          "columns": ["nTime","Fx",...],  // ordered column names
+          "data":    [[0.0, 1.2, ...],    // rows  — array-of-rows
+                      [0.02, 1.3, ...], ...]
+        }
+
+    Each column is stored in the .mat file as a separate variable (numeric array).
+    Column names are sanitised to valid MATLAB identifiers.
+    Returns binary application/octet-stream.
+    """
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    if not _SCIPY_AVAILABLE:
+        return jsonify({"error": "scipy is not installed on the server. Run: pip install scipy"}), 500
+
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "Request body must be JSON."}), 400
+
+    columns = body.get('columns', [])
+    rows    = body.get('data', [])
+    name    = body.get('name', 'experiment_data')
+
+    if not columns or not rows:
+        return jsonify({"error": "Missing 'columns' or 'data' in request body."}), 400
+
+    # Build per-column numpy arrays (float64 where possible)
+    mat_dict = {}
+    n_rows   = len(rows)
+    for ci, col in enumerate(columns):
+        vals = []
+        for row in rows:
+            v = row[ci] if ci < len(row) else None
+            try:
+                vals.append(float(v))
+            except (TypeError, ValueError):
+                vals.append(float('nan'))
+        # sanitise column name to a valid MATLAB variable name
+        safe = ''.join(c if (c.isalnum() or c == '_') else '_' for c in str(col))
+        if safe and safe[0].isdigit():
+            safe = 'x' + safe
+        if not safe:
+            safe = f'col{ci}'
+        mat_dict[safe] = np.array(vals, dtype=np.float64).reshape(-1, 1)
+
+    buf = io.BytesIO()
+    _scipy_savemat(buf, mat_dict)
+    buf.seek(0)
+
+    safe_name = ''.join(c if (c.isalnum() or c in '-_') else '_' for c in name)
+    filename  = f"{safe_name}.mat"
+
+    return send_file(
+        buf,
+        mimetype='application/octet-stream',
+        as_attachment=True,
+        download_name=filename,
+    )
 
 #----------------------------------------------------------
 
