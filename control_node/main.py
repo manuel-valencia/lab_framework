@@ -115,7 +115,7 @@ class ControlNode:
         self._start_offline_monitor()
         self._start_web_server()
 
-    NODE_TIMEOUT_SECS  = 600   # mark offline after 10 min of silence
+    NODE_TIMEOUT_SECS  = 60    # mark offline after 1 min of silence
     MONITOR_PERIOD_SECS = 30   # how often the monitor thread wakes
 
     def _start_offline_monitor(self):
@@ -301,9 +301,18 @@ class ControlNode:
         entry["last_seen_readable"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
         entry["status"]             = "online"
 
+        # Valid FSM states — reject anything else (e.g. "READY" from old firmware)
+        _VALID_STATES = {'IDLE', 'CONFIGUREVALIDATE', 'CONFIGUREPENDING',
+                         'RUNNING', 'POSTPROC', 'DONE', 'ERROR',
+                         'CALIBRATING', 'TESTINGSENSOR', 'TESTINGACTUATOR',
+                         'BOOT', 'UPDATING'}
         if isinstance(payload, dict):
             if "state" in payload:
-                entry["state"] = payload["state"]
+                state = payload["state"]
+                if state in _VALID_STATES:
+                    entry["state"] = state
+                else:
+                    self.logger.warning("[%s] ignoring invalid state '%s' — not in FSM", node_id, state)
             if "ip" in payload:
                 entry["ip"] = payload["ip"]
             if "capabilities" in payload:

@@ -63,6 +63,7 @@
     .s-UPDATING         { background:#431407; color:#fb923c; }
     .s-BOOT,
     .s-UNKNOWN          { background:#1e293b; color:#94a3b8; }
+    .s-OFFLINE          { background:#1e293b; color:#64748b; }
 
     /* ── Forms & inputs ───────────────────────────────────────── */
     label { display:block; font-size:.75rem; color:var(--muted); margin-bottom:4px; }
@@ -184,7 +185,8 @@
         <template x-for="[id, node] in Object.entries(nodes)" :key="id">
           <div class="node-card" :class="node.online ? 'node-online' : 'node-offline'">
             <div class="node-name" x-text="id"></div>
-            <div class="node-state" :class="'s-'+(node.state||'UNKNOWN')" x-text="node.state||'—'"></div>
+            <div class="node-state" :class="'s-'+(node.online ? (node.state||'UNKNOWN') : 'OFFLINE')"
+                 x-text="node.online ? (node.state||'—') : 'OFFLINE'"></div>
             <div class="node-meta">
               <div x-text="'IP: '+(node.ip||'—')"></div>
               <div x-text="'Last seen: '+(node.lastSeen||'—')"></div>
@@ -486,7 +488,7 @@
               <label>Target node</label>
               <select x-model="expNodeTarget">
                 <option value="">&mdash; select node &mdash;</option>
-                <template x-for="[id, node] in Object.entries(nodes).filter(([,n]) => n.online)" :key="id">
+                <template x-for="[id, node] in Object.entries(nodes).filter(([id,n]) => n.online && (!expNodeType || id === expNodeType))" :key="id">
                   <option :value="id" x-text="id"></option>
                 </template>
               </select>
@@ -1077,9 +1079,23 @@
         try {
           const res  = await fetch('/api/nodes');
           const data = await res.json();
-          // Merge REST snapshot — don't overwrite live MQTT data for online nodes
           for (const [id, info] of Object.entries(data)) {
-            if (!this.nodes[id]) this.nodes[id] = info;
+            const existing = this.nodes[id] || {};
+            this.nodes[id] = {
+              ...existing,
+              // Always refresh authoritative fields from REST
+              online:      info.online,
+              hasSensor:   info.hasSensor   ?? existing.hasSensor,
+              hasActuator: info.hasActuator ?? existing.hasActuator,
+              ip:          existing.ip      || info.ip || '—',
+              // For offline nodes use the server-formatted timestamp;
+              // for online nodes the MQTT handler keeps lastSeen fresh.
+              lastSeen:    info.online
+                             ? (existing.lastSeen || info.last_seen_readable || '—')
+                             : (info.last_seen_readable || existing.lastSeen || '—'),
+              // Keep MQTT-live state; fall back to REST state for newly seen nodes
+              state:       existing.state || info.state || 'UNKNOWN',
+            };
           }
           this.nodes    = { ...this.nodes };
           this.lastPoll = new Date().toLocaleTimeString();
@@ -1103,6 +1119,10 @@
           // Populate structured experiment form if template has _nodeType
           if (data._nodeType) {
             this.expNodeType    = data._nodeType;
+            // Clear stale target if it doesn't match the new template's node type
+            if (this.expNodeTarget && this.expNodeTarget !== data._nodeType) {
+              this.expNodeTarget = '';
+            }
             this.expDescription = data._description || '';
             const fields    = EXP_FORMS[data._nodeType]?.fields || [];
             const formKeys  = new Set(fields.map(f => f.key));
