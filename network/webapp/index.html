@@ -160,6 +160,12 @@
     </template>
   </nav>
 
+  <!-- ── Experiment progress bar ──────────────────────────────── -->
+  <div x-show="expProgressActive" x-cloak
+       style="height:5px;background:var(--border);overflow:hidden">
+    <div :style="`width:${expProgress}%;background:var(--accent);height:100%;transition:width .08s linear`"></div>
+  </div>
+
   <main>
 
     <!-- ════════════════ SYSTEM TAB ═════════════════════════════ -->
@@ -442,7 +448,7 @@
             </button>
             <button class="btn btn-primary"
                     :disabled="(nodes[expNodeTarget]?.state) !== 'CONFIGUREPENDING'"
-                    @click="sendCmd(expNodeTarget, {cmd:'RunValid'}); expDataAvailable=false">
+                    @click="playTrainWhistle(); sendCmd(expNodeTarget, {cmd:'RunValid'}); expDataAvailable=false">
               &#9654; Run
             </button>
             <button class="btn btn-danger"
@@ -559,6 +565,29 @@
         </div>
 
         <div class="flash mt" :class="{err: dataFlash.startsWith('Error')}" x-text="dataFlash"></div>
+
+        <!-- Danger zone: clear all stored data -->
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #450a0a">
+          <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#fca5a5;margin-bottom:8px">Danger zone</div>
+          <div x-show="!dataClearActive" style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-danger" style="padding:4px 14px;font-size:.8rem"
+                    @click="dataClearActive=true">&#128465; Clear all stored data</button>
+            <span style="font-size:.75rem;color:var(--muted)">Permanently removes all files on this REST server</span>
+          </div>
+          <div x-show="dataClearActive" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="text" x-model="dataClearConfirm" placeholder="CLEAR"
+                   style="width:100px"
+                   @keyup.escape="dataClearActive=false;dataClearConfirm=''"
+                   @keyup.enter="dataClearExecute()" />
+            <button class="btn btn-danger" style="padding:4px 14px;font-size:.8rem"
+                    @click="dataClearExecute()">Confirm</button>
+            <button class="btn btn-secondary" style="padding:4px 14px;font-size:.8rem"
+                    @click="dataClearActive=false;dataClearConfirm=''">Cancel</button>
+          </div>
+          <div x-show="dataClearStatus" style="font-size:.78rem;margin-top:6px"
+               :style="dataClearStatus.startsWith('Error') ? 'color:#fca5a5' : 'color:#86efac'"
+               x-text="dataClearStatus"></div>
+        </div>
       </div>
 
       <!-- Fetch by name — direct lookup for any node/run (including past sessions) -->
@@ -706,6 +735,12 @@
       expDebugLogs:     {},   // { nodeId: [{level, text}, ...] }
       MAX_DEBUG_LINES:  100,
 
+      // ── Experiment progress bar ────────────────────────────────
+      expProgress:         0,     // 0-100 percent fill
+      expProgressDuration: 0,     // seconds
+      expProgressActive:   false,
+      _progressInterval:   null,
+
       // ── Data tab ───────────────────────────────────────────────
       dataNodeId:   '',
       dataNodeList: [],
@@ -827,6 +862,12 @@
           const level = msg.level || 'INFO';
           const text  = `[${nodeId}] ${msg.msg || msg.message || raw}`;
           this.addLog(level, text);
+          // Detect run start — parse duration and kick off the header progress bar
+          const _logText = msg.msg || msg.message || '';
+          const _pm = _logText.match(/handleRun:\s*acquiring\s*([\d.]+)\s*s/i);
+          if (_pm) this.startProgress(parseFloat(_pm[1]));
+          // Detect run complete — snap progress bar to 100%
+          if (/handleRun:\s*acquisition complete/i.test(_logText)) this.finishProgress();
           // Mirror to calibration terminal when this node is being calibrated
           if (this.calibWizard.active && nodeId === this.calibWizard.nodeId) {
             const tt = level.toUpperCase() === 'ERROR' ? 'error'
@@ -1205,6 +1246,67 @@
           this.dataFlash = `Downloaded ${fname}`;
           setTimeout(() => { this.dataFlash = ''; }, 3000);
         } catch (e) { this.dataFlash = 'Error: ' + e.message; }
+      },
+
+      playTrainWhistle() {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          if (ctx.state === 'suspended') ctx.resume();
+          const now = ctx.currentTime;
+          const dur = 1.5;
+          // G-major chord (392/494/587 Hz) + soft sub-fundamental for body
+          // Each tone gets a gentle LFO vibrato for an organic whistle character
+          [[392, 0.40], [494, 0.26], [587, 0.16], [196, 0.09]].forEach(([freq, pk]) => {
+            const osc     = ctx.createOscillator();
+            const env     = ctx.createGain();
+            osc.type      = 'sine';
+            osc.frequency.value = freq;
+            // Subtle vibrato: LFO starts after the attack settles
+            const lfo     = ctx.createOscillator();
+            const lfoGain = ctx.createGain();
+            lfo.frequency.value = 5;              // 5 Hz wobble
+            lfoGain.gain.value  = freq * 0.014;   // ~1.4 % pitch depth
+            lfo.connect(lfoGain);
+            lfoGain.connect(osc.frequency);
+            lfo.start(now + 0.12);
+            lfo.stop(now + dur + 0.05);
+            // Envelope: sharp attack → hold → smooth decay
+            env.gain.setValueAtTime(0, now);
+            env.gain.linearRampToValueAtTime(pk, now + 0.05);  // attack
+            env.gain.setValueAtTime(pk, now + 0.95);           // hold
+            env.gain.linearRampToValueAtTime(0, now + dur);    // decay
+            osc.connect(env);
+            env.connect(ctx.destination);
+            osc.start(now);
+            osc.stop(now + dur + 0.05);
+          });
+          setTimeout(() => ctx.close(), (dur + 0.4) * 1000);
+        } catch (_e) { /* silently ignore if Web Audio not available */ }
+      },
+
+      startProgress(sec) {
+        if (this._progressInterval) clearInterval(this._progressInterval);
+        this.expProgressDuration = sec;
+        this.expProgress         = 0;
+        this.expProgressActive   = true;
+        const tickMs = 100;
+        const ticks  = (sec * 1000) / tickMs;
+        const step   = 90 / ticks;   // fill to 90% over acquisition; finishProgress() completes it
+        this._progressInterval = setInterval(() => {
+          this.expProgress = Math.min(this.expProgress + step, 90);
+          if (this.expProgress >= 90) {
+            clearInterval(this._progressInterval);
+            this._progressInterval = null;
+            // Hold at 90% — waiting for "acquisition complete" log
+          }
+        }, tickMs);
+      },
+
+      finishProgress() {
+        if (this._progressInterval) { clearInterval(this._progressInterval); this._progressInterval = null; }
+        if (!this.expProgressActive) return;
+        this.expProgress = 100;
+        setTimeout(() => { this.expProgressActive = false; this.expProgress = 0; }, 400);
       },
 
       async dataClearExecute() {
