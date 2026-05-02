@@ -37,7 +37,7 @@ Desktop.ini
 
 # === MATLAB artifacts ===
 *.asv
-**/probe_gains.mat
+**/probe_gains*.mat
 
 # === Data files (test data, experiments, etc.) ===
 *.csv
@@ -93,3 +93,6 @@ test/**/VirtualIntegrationTest/*.mat
 # === Keep important files that might match patterns above ===
 !pythonCommon/requirements.txt
 !**/README.md
+
+# === Calibration Gains ===
+waveMakerProbe_node/probe_gains.mat

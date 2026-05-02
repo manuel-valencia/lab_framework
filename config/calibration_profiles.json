@@ -52,7 +52,7 @@
         "label": "Probe Gains",
         "intro": [
           "This wizard calibrates the wave probe height gains.",
-          "First, specify which probes are active (comma-separated indices, 1–8).",
+          "First, specify which probes are active (comma-separated indices, 1-8).",
           "Then for each data point: set the probe to a known still-water height and enter that value.",
           "Heights are in meters (e.g. 0.05 for 5 cm).",
           "Collect at least 3 points. Type 'done' when finished."
@@ -63,7 +63,7 @@
             "type": "int_array",
             "min": 1,
             "max": 8,
-            "prompt": "Active probe indices (comma-separated, range 1–8, e.g. 1,2,3):"
+            "prompt": "Active probe indices (comma-separated, range 1-8, e.g. 1,2,3):"
           }
         ],
         "pointPrompts": [
