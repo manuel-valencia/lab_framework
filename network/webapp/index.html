@@ -589,8 +589,6 @@
             </div>
           </div>
 
-          </div>
-
           <!-- ═══════════════════════════════════════════════════════
                multiFullRun: dual-node status + full form
                ═══════════════════════════════════════════════════════ -->
@@ -701,21 +699,24 @@
               </div>
               <div x-show="expMultiPaddleMode === 'wave'">
                 <div class="form-row" style="margin-top:6px">
-                  <label>Amplitude (m) <span style="color:#fca5a5">*</span></label>
-                  <input type="text" x-model="expMultiAmplitude" :placeholder="'e.g. 0.02  or  0.01, 0.02, 0.03  ('+expMultiNumRuns+' values)'" />
-                </div>
-                <div class="form-row" style="margin-top:6px">
-                  <label>Frequency (Hz) <span style="color:#fca5a5">*</span></label>
-                  <input type="text" x-model="expMultiFrequency" :placeholder="'e.g. 1.0  or  0.5, 1.0, 1.5  ('+expMultiNumRuns+' values)'" />
-                </div>
-                <div class="form-row" style="margin-top:6px">
                   <label>Signal type</label>
-                  <select x-model="expMultiSignalType">
+                  <select x-model="expMultiSignalType" @change="onExpMultiSignalTypeChange()">
                     <template x-for="st in getExpWaveSignalTypes()" :key="st.id">
                       <option :value="st.id" x-text="st.label"></option>
                     </template>
                   </select>
                 </div>
+                <template x-for="field in getMultiWaveFields()" :key="field.key">
+                  <div class="form-row" style="margin-top:6px">
+                    <label x-text="field.label + (field.unit ? ' (' + field.unit + ')' : '') + (field.required ? ' *' : '')"></label>
+                    <input type="text"
+                           x-model="expMultiWaveFormValues[field.key]"
+                           :placeholder="field.default !== undefined
+                             ? ('e.g. ' + String(field.default) + '  or  ' + String(field.default) + ', ' + String(field.default) + '  (' + expMultiNumRuns + ' values)')
+                             : ('single value or ' + expMultiNumRuns + ' comma-separated values')" />
+                    <div class="exp-field-hint">Single value applies to all runs. Use <span x-text="expMultiNumRuns"></span> comma-separated values for per-run control.</div>
+                  </div>
+                </template>
               </div>
               <!-- Validation warning -->
               <div x-show="expMultiValidateLists() !== null"
@@ -735,15 +736,15 @@
               <div x-show="expMultiSettleEnabled" style="display:flex;flex-wrap:wrap;gap:10px">
                 <div class="form-row" style="flex:1;min-width:130px">
                   <label>Collect duration (s)</label>
-                  <input type="number" x-model="expMultiSettleDuration" placeholder="10" min="1" max="60" />
+                  <input type="number" x-model.number="expMultiSettleDuration" placeholder="10" min="1" max="60" />
                 </div>
                 <div class="form-row" style="flex:1;min-width:130px">
                   <label>Threshold (m)</label>
-                  <input type="number" x-model="expMultiSettleThreshold" placeholder="0.005" step="0.001" min="0" />
+                  <input type="number" x-model.number="expMultiSettleThreshold" placeholder="0.005" step="0.001" min="0" />
                 </div>
                 <div class="form-row" style="flex:1;min-width:120px">
                   <label>Max retries</label>
-                  <input type="number" x-model="expMultiSettleMaxRetries" placeholder="5" min="1" max="20" />
+                  <input type="number" x-model.number="expMultiSettleMaxRetries" placeholder="5" min="1" max="20" />
                 </div>
               </div>
               <div x-show="!expMultiSettleEnabled"
@@ -1253,9 +1254,8 @@
       expMultiLaserEnabled:    true,
       expMultiActiveProbes:    '',
       expMultiPaddleMode:      'none',
-      expMultiAmplitude:       '',
-      expMultiFrequency:       '',
       expMultiSignalType:      'sinusoidal',
+      expMultiWaveFormValues:  {},
       // Settle check config
       expMultiSettleEnabled:   true,
       expMultiSettleDuration:  10,     // probe collect duration in seconds
@@ -1263,7 +1263,11 @@
       expMultiSettleMaxRetries: 5,
       expMultiSettleStatus:    '',     // live status string shown in UI
       expMultiSettleOK:        false,
+      expMultiSettleInProgress: false,
+      expMultiSettleTriggeredForRun: 0,
       _expMultiSettleAbort:    false,  // internal flag to cancel in-flight settle
+      _expMultiSettleToken:    0,
+      _expMultiSettleIdleWaitTimer: null,
 
       // ── Experiment progress bar ────────────────────────────────
       expProgress:         0,     // 0-100 percent fill
@@ -1434,17 +1438,19 @@
               }
             }
             if (nodeId === 'waveMakerProbeNode') {
-              if (msg.state === 'CONFIGUREPENDING') {
-                this.expMultiWaveReady = true;
-              } else if (msg.state === 'DONE' && k >= 0) {
-                const wd = [...this.expMultiWaveData]; wd[k] = true; this.expMultiWaveData = wd;
-                this.expFlash = `waveMakerProbeNode run ${this.expMultiCurrentRun} complete.`;
-                setTimeout(() => { this.expFlash = ''; }, 5000);
-                this._expMultiCheckBothDone(k);
-              } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expMultiWaveReady) {
-                this.expMultiWaveReady = false;
-                this.expFlash = '⚠ waveMakerProbeNode returned to IDLE — re-configure before running.';
-                setTimeout(() => { this.expFlash = ''; }, 8000);
+              if (!this.expMultiSettleInProgress) {
+                if (msg.state === 'CONFIGUREPENDING') {
+                  this.expMultiWaveReady = true;
+                } else if (msg.state === 'DONE' && k >= 0) {
+                  const wd = [...this.expMultiWaveData]; wd[k] = true; this.expMultiWaveData = wd;
+                  this.expFlash = `waveMakerProbeNode run ${this.expMultiCurrentRun} complete.`;
+                  setTimeout(() => { this.expFlash = ''; }, 5000);
+                  this._expMultiCheckBothDone(k);
+                } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expMultiWaveReady) {
+                  this.expMultiWaveReady = false;
+                  this.expFlash = '⚠ waveMakerProbeNode returned to IDLE — re-configure before running.';
+                  setTimeout(() => { this.expFlash = ''; }, 8000);
+                }
               }
             }
           }
@@ -1643,8 +1649,7 @@
               this.expMultiActiveProbes    = wn.activeProbes || '';
               this.expMultiPaddleMode      = wn.paddleMode || 'none';
               this.expMultiSignalType      = wn.signalType || 'sinusoidal';
-              this.expMultiAmplitude       = Array.isArray(wn.amplitude) ? wn.amplitude.join(', ') : String(wn.amplitude || '');
-              this.expMultiFrequency       = Array.isArray(wn.frequency) ? wn.frequency.join(', ') : String(wn.frequency || '');
+              this.expMultiWaveFormValues  = {};
               this.expMultiSettleEnabled   = sc.enabled !== false;
               this.expMultiSettleDuration  = sc.collectDuration_s || 10;
               this.expMultiSettleThreshold = sc.threshold || 0.005;
@@ -1659,7 +1664,14 @@
               this.expMultiWaveData        = [];
               this.expMultiSettleStatus    = '';
               this.expMultiSettleOK        = false;
+              this.expMultiSettleInProgress = false;
+              this.expMultiSettleTriggeredForRun = 0;
               this._expMultiSettleAbort    = false;
+              this._expMultiSettleToken     = 0;
+              if (this._expMultiSettleIdleWaitTimer) {
+                clearInterval(this._expMultiSettleIdleWaitTimer);
+                this._expMultiSettleIdleWaitTimer = null;
+              }
               if (this.expMultiPaddleMode === 'wave') {
                 if (!Object.keys(this.actuatorProfiles).length) {
                   try {
@@ -1667,8 +1679,7 @@
                     if (r.ok) this.actuatorProfiles = await r.json();
                   } catch (_e) {}
                 }
-                this.expWaveSignalType = this.expMultiSignalType;
-                this._initExpWaveFormDefaults();
+                this._initMultiWaveFormDefaults(wn);
               }
             }
           }
@@ -1900,6 +1911,59 @@
         return { values: vals, error: null };
       },
 
+      getMultiWaveFields() {
+        const profile = this.actuatorProfiles['waveMakerProbeNode'] || this.actuatorProfiles[this.expNodeType];
+        if (!profile?.signalTypes?.length) return [];
+        const signalType = this.expMultiSignalType || profile.signalTypes[0]?.id;
+        const st = profile.signalTypes.find(s => s.id === signalType);
+        return st ? st.fields.filter(f => f.key !== 'duration') : [];
+      },
+
+      _initMultiWaveFormDefaults(seed = null) {
+        const next = {};
+        for (const field of this.getMultiWaveFields()) {
+          const seeded = seed?.[field.key];
+          if (Array.isArray(seeded)) {
+            next[field.key] = seeded.join(', ');
+          } else if (seeded !== undefined && seeded !== null && seeded !== '') {
+            next[field.key] = String(seeded);
+          } else if (this.expMultiWaveFormValues[field.key] !== undefined) {
+            next[field.key] = this.expMultiWaveFormValues[field.key];
+          } else if (field.default !== undefined) {
+            next[field.key] = String(field.default);
+          } else {
+            next[field.key] = '';
+          }
+        }
+        this.expMultiWaveFormValues = next;
+      },
+
+      _resolveMultiWaveFieldValues(n) {
+        const resolved = {};
+        for (const field of this.getMultiWaveFields()) {
+          const raw = this.expMultiWaveFormValues[field.key] ?? '';
+          const parsed = this._resolveMultiField(raw, n, field.label);
+          if (parsed.error) return { values: null, error: parsed.error };
+          if (field.required && parsed.values.some(v => v === null)) {
+            return { values: null, error: `${field.label}: enter a value.` };
+          }
+          if (field.type === 'int') {
+            const bad = parsed.values.find(v => v !== null && !Number.isInteger(v));
+            if (bad !== undefined) {
+              return { values: null, error: `${field.label}: values must be integers.` };
+            }
+          }
+          if (field.min !== undefined) {
+            const bad = parsed.values.find(v => v !== null && v < field.min);
+            if (bad !== undefined) {
+              return { values: null, error: `${field.label}: values must be ≥ ${field.min}.` };
+            }
+          }
+          resolved[field.key] = parsed.values;
+        }
+        return { values: resolved, error: null };
+      },
+
       // Validate all comma-list fields vs numExperiments. Returns first error string or null.
       expMultiValidateLists() {
         const n = Number(this.expMultiNumRuns) || 0;
@@ -1908,10 +1972,8 @@
         if (dur.error) return dur.error;
         if (dur.values?.some(v => v !== null && v <= 0)) return 'Duration: all values must be > 0.';
         if (this.expMultiPaddleMode === 'wave') {
-          const amp = this._resolveMultiField(this.expMultiAmplitude, n, 'Amplitude');
-          if (amp.error) return amp.error;
-          const frq = this._resolveMultiField(this.expMultiFrequency, n, 'Frequency');
-          if (frq.error) return frq.error;
+          const wave = this._resolveMultiWaveFieldValues(n);
+          if (wave.error) return wave.error;
         }
         return null;
       },
@@ -1922,12 +1984,10 @@
         const n   = Number(this.expMultiNumRuns) || 0;
         const dur = this._resolveMultiField(this.expMultiDuration, n, 'Duration');
         if (dur.error) return dur.error;
-        const amp = this.expMultiPaddleMode === 'wave'
-          ? this._resolveMultiField(this.expMultiAmplitude, n, 'Amplitude') : { values: Array(n).fill(0), error: null };
-        if (amp.error) return amp.error;
-        const frq = this.expMultiPaddleMode === 'wave'
-          ? this._resolveMultiField(this.expMultiFrequency, n, 'Frequency') : { values: Array(n).fill(0), error: null };
-        if (frq.error) return frq.error;
+        const waveFields = this.expMultiPaddleMode === 'wave'
+          ? this._resolveMultiWaveFieldValues(n)
+          : { values: {}, error: null };
+        if (waveFields.error) return waveFields.error;
 
         const probeRaw = String(this.expMultiActiveProbes || '').trim();
         const probeIndices = probeRaw.split(',').map(s => parseInt(s.trim(), 10)).filter(v => !isNaN(v) && v >= 1 && v <= 8);
@@ -1950,9 +2010,18 @@
             duration:     dur.values[i] ?? 30,
             activeProbes: probeIndices,
             signalType:   this.expMultiSignalType,
-            amplitude:    this.expMultiPaddleMode === 'wave' ? (amp.values[i] ?? 0) : 0,
-            frequency:    this.expMultiPaddleMode === 'wave' ? (frq.values[i] ?? 0) : 0,
           };
+          if (this.expMultiPaddleMode === 'wave') {
+            for (const field of this.getMultiWaveFields()) {
+              const values = waveFields.values[field.key] || [];
+              if (values[i] !== null && values[i] !== undefined && values[i] !== '') {
+                wave[field.key] = values[i];
+              }
+            }
+          } else {
+            wave.amplitude = 0;
+            wave.frequency = 0;
+          }
           exps.push({ carriage, wave, runName });
         }
         this.expMultiExperiments = exps;
@@ -2028,6 +2097,14 @@
         const exp = this.expMultiExperiments[runIndex - 1];
         if (!exp) { this.expFlash = 'Error: run index out of range.'; return; }
 
+        if (this._expMultiSettleIdleWaitTimer) {
+          clearInterval(this._expMultiSettleIdleWaitTimer);
+          this._expMultiSettleIdleWaitTimer = null;
+        }
+        this._expMultiSettleToken++;
+        this._expMultiSettleAbort    = false;
+        this.expMultiSettleInProgress = false;
+        this.expMultiSettleTriggeredForRun = 0;
         this.expMultiCarriageReady = false;
         this.expMultiWaveReady     = false;
         this.expMultiSettleOK      = false;
@@ -2050,9 +2127,15 @@
       },
 
       expMultiAbort() {
+        if (this._expMultiSettleIdleWaitTimer) {
+          clearInterval(this._expMultiSettleIdleWaitTimer);
+          this._expMultiSettleIdleWaitTimer = null;
+        }
+        this._expMultiSettleToken++;
         this._expMultiSettleAbort = true;
         this.expMultiSettleStatus = '';
         this.expMultiSettleOK     = false;
+        this.expMultiSettleInProgress = false;
         this.sendCmd('carriageNode',       { cmd: 'Abort' });
         this.sendCmd('waveMakerProbeNode', { cmd: 'Abort' });
         this.expFlash = 'Abort sent to both nodes.';
@@ -2063,6 +2146,7 @@
         this.expMultiCurrentRun++;
         this.expMultiSettleOK     = false;
         this.expMultiSettleStatus = '';
+        this.expMultiSettleTriggeredForRun = 0;
         this.expMultiConfigure(this.expMultiCurrentRun);
       },
 
@@ -2071,6 +2155,7 @@
         const cd = this.expMultiCarriageData;
         const wd = this.expMultiWaveData;
         if (cd[k] && wd[k]) {
+          if (this.expMultiSettleInProgress) return;
           // Both done — trigger settle (or skip if last round or paddleMode=none)
           if (this.expMultiCurrentRun >= this.expMultiNumRuns) {
             // Last round complete — no settle needed
@@ -2078,13 +2163,25 @@
           } else if (this.expMultiPaddleMode !== 'wave' || !this.expMultiSettleEnabled) {
             this.expMultiSettleOK = true;
           } else {
+            if (this.expMultiSettleTriggeredForRun === this.expMultiCurrentRun) return;
+            this.expMultiSettleTriggeredForRun = this.expMultiCurrentRun;
+            const token = ++this._expMultiSettleToken;
             // Wait for both nodes to reach IDLE (POSTPROC may still be running)
-            const iv = setInterval(() => {
+            if (this._expMultiSettleIdleWaitTimer) {
+              clearInterval(this._expMultiSettleIdleWaitTimer);
+            }
+            this._expMultiSettleIdleWaitTimer = setInterval(() => {
+              if (token !== this._expMultiSettleToken) {
+                clearInterval(this._expMultiSettleIdleWaitTimer);
+                this._expMultiSettleIdleWaitTimer = null;
+                return;
+              }
               const cs = this.nodes['carriageNode']?.state;
               const ws = this.nodes['waveMakerProbeNode']?.state;
               if (cs === 'IDLE' && ws === 'IDLE') {
-                clearInterval(iv);
-                this._runSettleCollect(1);
+                clearInterval(this._expMultiSettleIdleWaitTimer);
+                this._expMultiSettleIdleWaitTimer = null;
+                this._runSettleCollect(1, token);
               }
             }, 1000);
           }
@@ -2092,9 +2189,23 @@
       },
 
       // Run a wave_probes_collect-equivalent, fetch REST data, check half-amplitude.
-      async _runSettleCollect(attempt) {
-        if (this._expMultiSettleAbort) { this._expMultiSettleAbort = false; return; }
-        const maxR = this.expMultiSettleMaxRetries;
+      async _runSettleCollect(attempt, token = this._expMultiSettleToken) {
+        if (token !== this._expMultiSettleToken) return;
+        if (this._expMultiSettleAbort) {
+          this._expMultiSettleAbort = false;
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        this.expMultiSettleInProgress = true;
+        this.expMultiSettleOK = false;
+        const settleDuration = Number(this.expMultiSettleDuration);
+        if (!Number.isFinite(settleDuration) || settleDuration <= 0) {
+          this.expMultiSettleStatus = '⚠ Settle collect duration must be a positive number.';
+          this.expMultiSettleOK = false;
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        const maxR = Math.max(1, Number(this.expMultiSettleMaxRetries) || 1);
         this.expMultiSettleStatus = `Checking settle… attempt ${attempt} of ${maxR}`;
 
         const probeRaw = String(this.expMultiActiveProbes || '').trim();
@@ -2102,7 +2213,7 @@
         const settleName = `settle_check_r${this.expMultiCurrentRun}_a${attempt}`;
         const waveParams = {
           name:         settleName,
-          duration:     this.expMultiSettleDuration,
+          duration:     settleDuration,
           activeProbes: probeIndices,
           signalType:   'sinusoidal',
           amplitude:    0,
@@ -2111,18 +2222,39 @@
 
         // Start settle collect on waveMakerProbeNode only
         await this.sendCmd('waveMakerProbeNode', { cmd: 'Run', params: waveParams });
+        if (token !== this._expMultiSettleToken) {
+          this.expMultiSettleInProgress = false;
+          return;
+        }
 
         // Poll for CONFIGUREPENDING
         await this._pollNodeState('waveMakerProbeNode', ['CONFIGUREPENDING', 'IDLE', 'ERROR'], 15000);
+        if (token !== this._expMultiSettleToken) {
+          this.expMultiSettleInProgress = false;
+          return;
+        }
         if (this.nodes['waveMakerProbeNode']?.state !== 'CONFIGUREPENDING') {
           this.expMultiSettleStatus = '⚠ Settle collect setup failed.';
+          this.expMultiSettleInProgress = false;
           return;
         }
         await this.sendCmd('waveMakerProbeNode', { cmd: 'RunValid' });
+        if (token !== this._expMultiSettleToken) {
+          this.expMultiSettleInProgress = false;
+          return;
+        }
 
         // Poll for IDLE (POSTPROC complete, data saved)
-        await this._pollNodeState('waveMakerProbeNode', ['IDLE', 'ERROR'], (this.expMultiSettleDuration + 15) * 1000);
-        if (this._expMultiSettleAbort) { this._expMultiSettleAbort = false; return; }
+        await this._pollNodeState('waveMakerProbeNode', ['IDLE', 'ERROR'], (settleDuration + 15) * 1000);
+        if (token !== this._expMultiSettleToken) {
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        if (this._expMultiSettleAbort) {
+          this._expMultiSettleAbort = false;
+          this.expMultiSettleInProgress = false;
+          return;
+        }
 
         // Fetch the settle collect data from REST
         let halfAmps = [];
@@ -2154,10 +2286,21 @@
           }
         } catch (e) {
           this.expMultiSettleStatus = `⚠ Settle data fetch failed: ${e.message}`;
+          this.expMultiSettleInProgress = false;
           return;
         }
 
-        const thresh  = this.expMultiSettleThreshold;
+        const thresh  = Number(this.expMultiSettleThreshold);
+        if (!Number.isFinite(thresh) || thresh < 0) {
+          this.expMultiSettleStatus = '⚠ Settle threshold must be a non-negative number.';
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        if (!halfAmps.length) {
+          this.expMultiSettleStatus = '⚠ Settle check found no matching active probe columns in returned data.';
+          this.expMultiSettleInProgress = false;
+          return;
+        }
         const allOK   = halfAmps.length > 0 && halfAmps.every(a => a < thresh);
         const maxAmp  = halfAmps.length ? Math.max(...halfAmps).toFixed(4) : '—';
         this.expMultiSettleStatus = allOK
@@ -2166,14 +2309,16 @@
 
         if (allOK) {
           this.expMultiSettleOK = true;
+          this.expMultiSettleInProgress = false;
           return;
         }
         if (attempt < maxR) {
-          await this._runSettleCollect(attempt + 1);
+          await this._runSettleCollect(attempt + 1, token);
         } else {
           this.expMultiSettleStatus = `⚠ Tank not settled after ${maxR} checks (max ${maxAmp} m). Verify manually before running next experiment.`;
           // Still set OK so the user can manually proceed if they accept the risk
           this.expMultiSettleOK = true;
+          this.expMultiSettleInProgress = false;
         }
       },
 
@@ -2210,9 +2355,13 @@
               if (r.ok) this.actuatorProfiles = await r.json();
             } catch (_e) {}
           }
-          this.expWaveSignalType = this.expMultiSignalType;
-          this._initExpWaveFormDefaults();
+          this._initMultiWaveFormDefaults();
         }
+      },
+
+      onExpMultiSignalTypeChange() {
+        this.expMultiPreviewed = false;
+        this._initMultiWaveFormDefaults();
       },
 
       async expDownload(nodeId = null) {
