@@ -482,8 +482,8 @@
             Load a template from the left panel to begin.
           </div>
 
-          <!-- Node selector + live state badge -->
-          <div class="exp-state-row">
+          <!-- Node selector + live state badge (single-node templates) -->
+          <div class="exp-state-row" x-show="expNodeType !== 'fullRun' && expNodeType !== 'multiFullRun'">
             <div style="flex:1">
               <label>Target node</label>
               <select x-model="expNodeTarget">
@@ -496,6 +496,34 @@
             <div x-show="expNodeTarget" style="margin-top:16px">
               <span class="node-state" :class="'s-'+(nodes[expNodeTarget]?.state||'UNKNOWN')"
                     x-text="nodes[expNodeTarget]?.state||'—'"></span>
+            </div>
+          </div>
+
+          <!-- Full-run: auto-selected dual-node status (no dropdown) -->
+          <div x-show="expNodeType === 'fullRun'" style="margin-bottom:10px">
+            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:4px">
+              <div>
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">carriageNode</div>
+                <span class="node-state"
+                      :class="'s-'+(nodes['carriageNode']?.online ? (nodes['carriageNode']?.state||'UNKNOWN') : 'OFFLINE')"
+                      x-text="nodes['carriageNode']?.online ? (nodes['carriageNode']?.state||'—') : 'OFFLINE'"></span>
+              </div>
+              <div>
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">waveMakerProbeNode</div>
+                <span class="node-state"
+                      :class="'s-'+(nodes['waveMakerProbeNode']?.online ? (nodes['waveMakerProbeNode']?.state||'UNKNOWN') : 'OFFLINE')"
+                      x-text="nodes['waveMakerProbeNode']?.online ? (nodes['waveMakerProbeNode']?.state||'—') : 'OFFLINE'"></span>
+              </div>
+            </div>
+            <div style="display:flex;gap:16px;margin-top:6px;font-size:.72rem">
+              <span :style="expFullCarriageReady ? 'color:#86efac' : 'color:#64748b'">
+                &#9679; carriageNode
+                <span x-text="expFullCarriageReady ? '— ready' : '— not configured'"></span>
+              </span>
+              <span :style="expFullWaveReady ? 'color:#86efac' : 'color:#64748b'">
+                &#9679; waveMakerProbeNode
+                <span x-text="expFullWaveReady ? '— ready' : '— not configured'"></span>
+              </span>
             </div>
           </div>
 
@@ -561,6 +589,245 @@
             </div>
           </div>
 
+          </div>
+
+          <!-- ═══════════════════════════════════════════════════════
+               multiFullRun: dual-node status + full form
+               ═══════════════════════════════════════════════════════ -->
+          <div x-show="expNodeType === 'multiFullRun'" style="margin-bottom:4px"
+               x-effect="if(expNodeType==='multiFullRun' && expFields.numExperiments) expMultiNumRuns=Number(expFields.numExperiments)||expMultiNumRuns">
+
+            <!-- Node state badges -->
+            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:4px;margin-bottom:8px">
+              <div>
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">carriageNode</div>
+                <span class="node-state"
+                      :class="'s-'+(nodes['carriageNode']?.online ? (nodes['carriageNode']?.state||'UNKNOWN') : 'OFFLINE')"
+                      x-text="nodes['carriageNode']?.online ? (nodes['carriageNode']?.state||'—') : 'OFFLINE'"></span>
+              </div>
+              <div>
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">waveMakerProbeNode</div>
+                <span class="node-state"
+                      :class="'s-'+(nodes['waveMakerProbeNode']?.online ? (nodes['waveMakerProbeNode']?.state||'UNKNOWN') : 'OFFLINE')"
+                      x-text="nodes['waveMakerProbeNode']?.online ? (nodes['waveMakerProbeNode']?.state||'—') : 'OFFLINE'"></span>
+              </div>
+              <div x-show="expMultiCurrentRun > 0">
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">Progress</div>
+                <span style="font-size:.85rem;color:#e2e8f0">Run
+                  <strong x-text="expMultiCurrentRun"></strong> of
+                  <strong x-text="expMultiNumRuns"></strong>
+                </span>
+              </div>
+            </div>
+            <!-- Ready dots -->
+            <div style="display:flex;gap:16px;margin-bottom:8px;font-size:.72rem">
+              <span :style="expMultiCarriageReady ? 'color:#86efac' : 'color:#64748b'">
+                &#9679; carriageNode <span x-text="expMultiCarriageReady ? '— ready' : '— not configured'"></span>
+              </span>
+              <span :style="expMultiWaveReady ? 'color:#86efac' : 'color:#64748b'">
+                &#9679; waveMakerProbeNode <span x-text="expMultiWaveReady ? '— ready' : '— not configured'"></span>
+              </span>
+            </div>
+            <!-- Settle status -->
+            <div x-show="expMultiSettleStatus"
+                 :style="expMultiSettleOK ? 'color:#86efac' : 'color:#fcd34d'"
+                 style="font-size:.78rem;margin-bottom:8px;padding:6px 10px;background:#1e2a35;border-radius:4px;border:1px solid #334155"
+                 x-text="expMultiSettleStatus"></div>
+
+            <!-- Run progress chips -->
+            <div x-show="expMultiCurrentRun > 0" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+              <template x-for="i in expMultiNumRuns" :key="i">
+                <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:12px;font-size:.73rem;border:1px solid"
+                      :style="
+                        i < expMultiCurrentRun   ? 'background:#14532d;border-color:#16a34a;color:#86efac' :
+                        i === expMultiCurrentRun ? 'background:#1e3a5f;border-color:#3b82f6;color:#93c5fd' :
+                                                   'background:#1e293b;border-color:#334155;color:#64748b'
+                      ">
+                  <span x-text="'Run ' + i"></span>
+                  <span x-show="i < expMultiCurrentRun">&#10003;</span>
+                  <span x-show="i === expMultiCurrentRun">&#9654;</span>
+                </span>
+              </template>
+            </div>
+
+            <!-- carriageNode settings card -->
+            <div style="margin-bottom:8px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+              <div class="section-title" style="margin-bottom:8px">carriageNode settings</div>
+              <div class="form-row">
+                <label>Sample rate (Hz)</label>
+                <input type="number" x-model="expMultiSampleRate" placeholder="Default: 50 Hz" />
+                <div class="exp-field-hint">Leave blank to use hardware default (50 Hz)</div>
+              </div>
+              <label style="margin-top:8px;display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem;color:var(--text)">
+                <input type="checkbox" x-model="expMultiLaserEnabled" style="width:auto" />
+                Include laser motion channels (heave / pitch / roll)
+              </label>
+              <div x-show="!expMultiLaserEnabled"
+                   style="margin-top:6px;font-size:.75rem;color:#fcd34d;padding:6px 8px;background:#2d2408;border:1px solid #4a3810;border-radius:4px">
+                &#9888; Laser channels excluded — output will contain Fx, Fy, Fz, Mx, My, Mz only.
+              </div>
+            </div>
+
+            <!-- waveMakerProbeNode settings card -->
+            <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:8px">
+              <div class="section-title" style="margin-bottom:8px">waveMakerProbeNode settings</div>
+              <div class="form-row">
+                <label>Active probes <span style="color:#fca5a5">*</span></label>
+                <input type="text" x-model="expMultiActiveProbes" placeholder="e.g. 1,2,3,4" />
+                <div class="exp-field-hint">Comma-separated probe indices 1–8</div>
+              </div>
+              <div class="form-row" style="margin-top:6px">
+                <label>Paddle mode</label>
+                <select x-model="expMultiPaddleMode" @change="onExpMultiPaddleModeChange()">
+                  <option value="none">No paddle movement (probes only)</option>
+                  <option value="wave">Generate wave signal</option>
+                </select>
+              </div>
+              <div x-show="expMultiPaddleMode === 'none'"
+                   style="margin-top:6px;padding:6px 10px;background:#1a2535;border:1px solid #2d4a6b;border-radius:4px;font-size:.75rem;color:#93c5fd">
+                &#8505; Paddle outputs 0&nbsp;V — wavemaker DAQ channel stays active but produces no motion.
+              </div>
+            </div>
+
+            <!-- Comma-list per-run fields -->
+            <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:8px">
+              <div class="section-title" style="margin-bottom:6px">Per-run parameters</div>
+              <div style="font-size:.74rem;color:var(--muted);margin-bottom:8px">
+                Enter a single value to apply to all runs, or <span x-text="expMultiNumRuns"></span> comma-separated values for per-run control.
+              </div>
+              <div class="form-row">
+                <label>Duration (s) <span style="color:#fca5a5">*</span></label>
+                <input type="text" x-model="expMultiDuration" :placeholder="'e.g. 30  or  30, 60, 60  ('+expMultiNumRuns+' values)'" />
+              </div>
+              <div x-show="expMultiPaddleMode === 'wave'">
+                <div class="form-row" style="margin-top:6px">
+                  <label>Amplitude (m) <span style="color:#fca5a5">*</span></label>
+                  <input type="text" x-model="expMultiAmplitude" :placeholder="'e.g. 0.02  or  0.01, 0.02, 0.03  ('+expMultiNumRuns+' values)'" />
+                </div>
+                <div class="form-row" style="margin-top:6px">
+                  <label>Frequency (Hz) <span style="color:#fca5a5">*</span></label>
+                  <input type="text" x-model="expMultiFrequency" :placeholder="'e.g. 1.0  or  0.5, 1.0, 1.5  ('+expMultiNumRuns+' values)'" />
+                </div>
+                <div class="form-row" style="margin-top:6px">
+                  <label>Signal type</label>
+                  <select x-model="expMultiSignalType">
+                    <template x-for="st in getExpWaveSignalTypes()" :key="st.id">
+                      <option :value="st.id" x-text="st.label"></option>
+                    </template>
+                  </select>
+                </div>
+              </div>
+              <!-- Validation warning -->
+              <div x-show="expMultiValidateLists() !== null"
+                   x-text="expMultiValidateLists()"
+                   style="margin-top:8px;color:#f87171;font-size:.76rem;padding:6px 8px;background:#2d1a1a;border:1px solid #7f1d1d;border-radius:4px">
+              </div>
+            </div>
+
+            <!-- Settle check config (only when wave mode) -->
+            <div x-show="expMultiPaddleMode === 'wave'"
+                 style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:8px">
+              <div class="section-title" style="margin-bottom:8px">Settle check (between runs)</div>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem;color:var(--text);margin-bottom:8px">
+                <input type="checkbox" x-model="expMultiSettleEnabled" style="width:auto" />
+                Enable between-run wave settle check
+              </label>
+              <div x-show="expMultiSettleEnabled" style="display:flex;flex-wrap:wrap;gap:10px">
+                <div class="form-row" style="flex:1;min-width:130px">
+                  <label>Collect duration (s)</label>
+                  <input type="number" x-model="expMultiSettleDuration" placeholder="10" min="1" max="60" />
+                </div>
+                <div class="form-row" style="flex:1;min-width:130px">
+                  <label>Threshold (m)</label>
+                  <input type="number" x-model="expMultiSettleThreshold" placeholder="0.005" step="0.001" min="0" />
+                </div>
+                <div class="form-row" style="flex:1;min-width:120px">
+                  <label>Max retries</label>
+                  <input type="number" x-model="expMultiSettleMaxRetries" placeholder="5" min="1" max="20" />
+                </div>
+              </div>
+              <div x-show="!expMultiSettleEnabled"
+                   style="font-size:.75rem;color:#fcd34d;padding:6px 8px;background:#2d2408;border:1px solid #4a3810;border-radius:4px;margin-top:4px">
+                &#9888; No settle check — runs will be configured one after another without waiting for waves to dissipate.
+              </div>
+            </div>
+
+            <!-- Preview signals panel -->
+            <div x-show="expMultiPreviewed && expMultiPreviewSignals.length > 0"
+                 style="padding:10px;background:var(--bg);border:1px solid #16a34a;border-radius:6px;margin-bottom:8px">
+              <div class="section-title" style="margin-bottom:8px;color:#86efac">&#10003; Wave signals previewed</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <template x-for="(sig, idx) in expMultiPreviewSignals" :key="idx">
+                  <button class="btn btn-secondary" style="font-size:.76rem;padding:4px 10px"
+                          :disabled="!sig.data"
+                          @click="expMultiOpenPreview(idx + 1)"
+                          x-text="'&#128065; Preview run ' + (idx + 1) + ' — ' + (sig.data ? '' : 'no data')"></button>
+                </template>
+              </div>
+            </div>
+
+            <!-- multiFullRun action buttons -->
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+              <!-- Preview All (only when wave mode, before run starts) -->
+              <button class="btn btn-secondary"
+                      x-show="expMultiPaddleMode === 'wave' && expMultiCurrentRun === 0"
+                      :disabled="!nodes['waveMakerProbeNode']?.online || expMultiValidateLists() !== null"
+                      @click="expMultiPreviewAll()">
+                &#128065; Preview All Signals
+              </button>
+              <!-- Configure run 1 (first configure) -->
+              <button class="btn btn-primary"
+                      x-show="expMultiCurrentRun === 0"
+                      :disabled="!nodes['carriageNode']?.online || !nodes['waveMakerProbeNode']?.online
+                                 || expMultiValidateLists() !== null
+                                 || (expMultiPaddleMode === 'wave' && !expMultiPreviewed)"
+                      @click="expMultiCurrentRun = 1; expMultiConfigure(1)">
+                Configure Run 1 of <span x-text="expMultiNumRuns"></span>
+              </button>
+              <!-- Run -->
+              <button class="btn btn-primary"
+                      x-show="expMultiCurrentRun > 0"
+                      :disabled="!expMultiCarriageReady || !expMultiWaveReady"
+                      @click="expMultiRun()">
+                &#9654; Run <span x-text="expMultiCurrentRun"></span> of <span x-text="expMultiNumRuns"></span>
+              </button>
+              <!-- Abort -->
+              <button class="btn btn-danger"
+                      x-show="expMultiCurrentRun > 0"
+                      :disabled="!['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes['carriageNode']?.state) && !['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes['waveMakerProbeNode']?.state) && !expMultiSettleStatus"
+                      @click="expMultiAbort()">
+                &#9632; Abort
+              </button>
+              <!-- Next run -->
+              <button class="btn btn-primary"
+                      x-show="expMultiCurrentRun > 0 && expMultiCurrentRun < expMultiNumRuns"
+                      :disabled="!expMultiCarriageData[expMultiCurrentRun-1] || !expMultiWaveData[expMultiCurrentRun-1] || !expMultiSettleOK"
+                      @click="expMultiNext()">
+                &#8594; Run <span x-text="expMultiCurrentRun + 1"></span> of <span x-text="expMultiNumRuns"></span>
+              </button>
+              <!-- Per-run data buttons (show after both done for that run) -->
+              <template x-for="i in expMultiCurrentRun" :key="'data'+i">
+                <template x-if="expMultiCarriageData[i-1] && expMultiWaveData[i-1]">
+                  <span style="display:inline-flex;gap:4px">
+                    <button class="btn btn-secondary" style="font-size:.74rem;padding:3px 8px"
+                            @click="expOpenPlotByTag('carriageNode', (expFields.name||'multi_run')+'_'+i)">
+                      &#128202; C<span x-text="i"></span>
+                    </button>
+                    <button class="btn btn-secondary" style="font-size:.74rem;padding:3px 8px"
+                            @click="expOpenPlotByTag('waveMakerProbeNode', (expFields.name||'multi_run')+'_'+i)">
+                      &#128202; W<span x-text="i"></span>
+                    </button>
+                  </span>
+                </template>
+              </template>
+              <!-- Debug toggle -->
+              <button class="btn" :class="expDebugOpen ? 'btn-danger' : 'btn-secondary'"
+                      @click="expDebugOpen = !expDebugOpen"
+                      x-text="expDebugOpen ? '&#128269; Hide debug' : '&#128269; Debug'"></button>
+            </div>
+          </div>
+          <!-- end multiFullRun panel -->
+
           <!-- waveMakerProbeNode/fullRun: wave signal type + params -->
           <div x-show="(expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes') || (expNodeType === 'fullRun' && expFullPaddleMode === 'wave')"
                style="margin-top:8px">
@@ -589,8 +856,8 @@
                  style="color:#f87171;font-size:.75rem;margin-top:4px"></div>
           </div>
 
-          <!-- Action buttons -->
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+          <!-- Action buttons (single-node and fullRun only — multiFullRun has its own buttons above) -->
+          <div x-show="expNodeType !== 'multiFullRun'" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
             <button class="btn btn-primary"
                     :disabled="expNodeType === 'fullRun'
                                ? (!nodes['carriageNode']?.online || !nodes['waveMakerProbeNode']?.online)
@@ -669,8 +936,8 @@
       </div>
 
       <!-- Debug terminals — appear below both cards -->
-      <div class="exp-debug-wrap" x-show="expDebugOpen && (expNodeTarget || expNodeType === 'fullRun')">
-        <template x-for="nodeId in (expNodeType === 'fullRun' ? ['carriageNode', 'waveMakerProbeNode'] : [expNodeTarget].filter(Boolean))" :key="nodeId">
+      <div class="exp-debug-wrap" x-show="expDebugOpen && (expNodeTarget || expNodeType === 'fullRun' || expNodeType === 'multiFullRun')">
+        <template x-for="nodeId in ((expNodeType === 'fullRun' || expNodeType === 'multiFullRun') ? ['carriageNode', 'waveMakerProbeNode'] : [expNodeTarget].filter(Boolean))" :key="nodeId">
           <div class="exp-debug-panel">
             <div class="exp-debug-header">
               <span x-text="'Debug: '+nodeId"></span>
@@ -865,6 +1132,12 @@
         { key: 'name',     label: 'Run name',     type: 'text',   required: false, hint: 'e.g. full_run_001' },
         { key: 'duration', label: 'Duration (s)', type: 'number', required: true,  hint: 'Acquisition time in seconds (applied to both nodes)' },
       ]
+    },
+    multiFullRun: {
+      fields: [
+        { key: 'name',           label: 'Run name prefix',  type: 'text',   required: false, hint: 'e.g. multi_run_001 — appended with _1, _2, …' },
+        { key: 'numExperiments', label: 'Number of runs',   type: 'number', required: true,  hint: 'Total experiments in this sequence (2–10)' },
+      ]
     }
   };
 
@@ -963,6 +1236,34 @@
       expFullLaserEnabled:   true,    // include heave/pitch/roll channels from carriageNode
       expFullCarriageData:   false,   // carriageNode run complete (DONE)
       expFullWaveData:       false,   // waveMakerProbeNode run complete (DONE)
+
+      // ── Multi-run full (webapp-orchestrated N sequential fullRun rounds) ─────
+      expMultiNumRuns:         3,
+      expMultiCurrentRun:      0,      // 1-based; 0 = not started
+      expMultiPreviewed:       false,  // all N wave signals reviewed and confirmed
+      expMultiPreviewSignals:  [],     // [{name, tag, previewUrl}] fetched from REST
+      expMultiExperiments:     [],     // resolved per-run param objects [{carriage, wave}]
+      expMultiCarriageReady:   false,
+      expMultiWaveReady:       false,
+      expMultiCarriageData:    [],     // boolean[N]
+      expMultiWaveData:        [],     // boolean[N]
+      // Comma-list raw inputs
+      expMultiDuration:        '',
+      expMultiSampleRate:      '',
+      expMultiLaserEnabled:    true,
+      expMultiActiveProbes:    '',
+      expMultiPaddleMode:      'none',
+      expMultiAmplitude:       '',
+      expMultiFrequency:       '',
+      expMultiSignalType:      'sinusoidal',
+      // Settle check config
+      expMultiSettleEnabled:   true,
+      expMultiSettleDuration:  10,     // probe collect duration in seconds
+      expMultiSettleThreshold: 0.005,
+      expMultiSettleMaxRetries: 5,
+      expMultiSettleStatus:    '',     // live status string shown in UI
+      expMultiSettleOK:        false,
+      _expMultiSettleAbort:    false,  // internal flag to cancel in-flight settle
 
       // ── Experiment progress bar ────────────────────────────────
       expProgress:         0,     // 0-100 percent fill
@@ -1110,6 +1411,38 @@
               } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expFullWaveReady) {
                 this.expFullWaveReady = false;
                 this.expFullPreviewSeen = false;
+                this.expFlash = '⚠ waveMakerProbeNode returned to IDLE — re-configure before running.';
+                setTimeout(() => { this.expFlash = ''; }, 8000);
+              }
+            }
+          }
+          // multiFullRun: track CONFIGUREPENDING and DONE per node per round
+          if (!isHeartbeat && this.expNodeType === 'multiFullRun') {
+            const k = this.expMultiCurrentRun - 1; // 0-based index of active run
+            if (nodeId === 'carriageNode') {
+              if (msg.state === 'CONFIGUREPENDING') {
+                this.expMultiCarriageReady = true;
+              } else if (msg.state === 'DONE' && k >= 0) {
+                const cd = [...this.expMultiCarriageData]; cd[k] = true; this.expMultiCarriageData = cd;
+                this.expFlash = `carriageNode run ${this.expMultiCurrentRun} complete.`;
+                setTimeout(() => { this.expFlash = ''; }, 5000);
+                this._expMultiCheckBothDone(k);
+              } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expMultiCarriageReady) {
+                this.expMultiCarriageReady = false;
+                this.expFlash = '⚠ carriageNode returned to IDLE — re-configure before running.';
+                setTimeout(() => { this.expFlash = ''; }, 8000);
+              }
+            }
+            if (nodeId === 'waveMakerProbeNode') {
+              if (msg.state === 'CONFIGUREPENDING') {
+                this.expMultiWaveReady = true;
+              } else if (msg.state === 'DONE' && k >= 0) {
+                const wd = [...this.expMultiWaveData]; wd[k] = true; this.expMultiWaveData = wd;
+                this.expFlash = `waveMakerProbeNode run ${this.expMultiCurrentRun} complete.`;
+                setTimeout(() => { this.expFlash = ''; }, 5000);
+                this._expMultiCheckBothDone(k);
+              } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expMultiWaveReady) {
+                this.expMultiWaveReady = false;
                 this.expFlash = '⚠ waveMakerProbeNode returned to IDLE — re-configure before running.';
                 setTimeout(() => { this.expFlash = ''; }, 8000);
               }
@@ -1297,6 +1630,47 @@
                 this._initExpWaveFormDefaults();
               }
             }
+            // multiFullRun: seed all expMulti* vars from template
+            if (data._nodeType === 'multiFullRun') {
+              const wn = data.waveMakerProbeNode || {};
+              const cn = data.carriageNode || {};
+              const sc = data.settleCheck || {};
+              this.expMultiNumRuns         = data.numExperiments || 3;
+              this.expFields.numExperiments = String(this.expMultiNumRuns);
+              this.expMultiDuration        = Array.isArray(data.duration) ? data.duration.join(', ') : String(data.duration || '');
+              this.expMultiSampleRate      = String(cn.sampleRate || '');
+              this.expMultiLaserEnabled    = cn.laserEnabled !== false;
+              this.expMultiActiveProbes    = wn.activeProbes || '';
+              this.expMultiPaddleMode      = wn.paddleMode || 'none';
+              this.expMultiSignalType      = wn.signalType || 'sinusoidal';
+              this.expMultiAmplitude       = Array.isArray(wn.amplitude) ? wn.amplitude.join(', ') : String(wn.amplitude || '');
+              this.expMultiFrequency       = Array.isArray(wn.frequency) ? wn.frequency.join(', ') : String(wn.frequency || '');
+              this.expMultiSettleEnabled   = sc.enabled !== false;
+              this.expMultiSettleDuration  = sc.collectDuration_s || 10;
+              this.expMultiSettleThreshold = sc.threshold || 0.005;
+              this.expMultiSettleMaxRetries = sc.maxRetries || 5;
+              this.expMultiCurrentRun      = 0;
+              this.expMultiPreviewed       = this.expMultiPaddleMode !== 'wave'; // wave requires preview
+              this.expMultiPreviewSignals  = [];
+              this.expMultiExperiments     = [];
+              this.expMultiCarriageReady   = false;
+              this.expMultiWaveReady       = false;
+              this.expMultiCarriageData    = [];
+              this.expMultiWaveData        = [];
+              this.expMultiSettleStatus    = '';
+              this.expMultiSettleOK        = false;
+              this._expMultiSettleAbort    = false;
+              if (this.expMultiPaddleMode === 'wave') {
+                if (!Object.keys(this.actuatorProfiles).length) {
+                  try {
+                    const r = await fetch('/api/actuator-profiles');
+                    if (r.ok) this.actuatorProfiles = await r.json();
+                  } catch (_e) {}
+                }
+                this.expWaveSignalType = this.expMultiSignalType;
+                this._initExpWaveFormDefaults();
+              }
+            }
           }
           this.activeTab = 'Experiment';
         } catch (e) {
@@ -1414,9 +1788,15 @@
         return null;
       },
 
-      onExpFullPaddleModeChange() {
+      async onExpFullPaddleModeChange() {
         this.expWaveFormError = '';
         if (this.expFullPaddleMode === 'wave') {
+          if (!Object.keys(this.actuatorProfiles).length) {
+            try {
+              const r = await fetch('/api/actuator-profiles');
+              if (r.ok) this.actuatorProfiles = await r.json();
+            } catch (_e) {}
+          }
           this.expWaveSignalType = 'sinusoidal';
           this._initExpWaveFormDefaults();
         }
@@ -1496,6 +1876,345 @@
         this.sendCmd('waveMakerProbeNode', { cmd: 'Abort' });
       },
 
+      // ══════════════════════════════════════════════════════════
+      //  Multi-run full — helpers, configure, run, settle
+      // ══════════════════════════════════════════════════════════
+
+      // Parse a raw comma-list string into an array of n numbers.
+      // Returns { values: [...], error: null } on success, or { values: null, error: '...' }.
+      _resolveMultiField(rawStr, n, label) {
+        const s = String(rawStr || '').trim();
+        if (!s) return { values: Array(n).fill(null), error: null };
+        const parts = s.split(',').map(p => p.trim()).filter(p => p !== '');
+        if (parts.length === 1) {
+          const v = Number(parts[0]);
+          if (isNaN(v)) return { values: null, error: `${label}: "${parts[0]}" is not a number.` };
+          return { values: Array(n).fill(v), error: null };
+        }
+        if (parts.length !== n) {
+          return { values: null, error: `${label}: expected 1 or ${n} values, got ${parts.length}.` };
+        }
+        const vals = parts.map(Number);
+        const bad = parts.findIndex((_, i) => isNaN(vals[i]));
+        if (bad !== -1) return { values: null, error: `${label}: value ${bad+1} ("${parts[bad]}") is not a number.` };
+        return { values: vals, error: null };
+      },
+
+      // Validate all comma-list fields vs numExperiments. Returns first error string or null.
+      expMultiValidateLists() {
+        const n = Number(this.expMultiNumRuns) || 0;
+        if (n < 1) return 'Number of runs must be at least 1.';
+        const dur = this._resolveMultiField(this.expMultiDuration, n, 'Duration');
+        if (dur.error) return dur.error;
+        if (dur.values?.some(v => v !== null && v <= 0)) return 'Duration: all values must be > 0.';
+        if (this.expMultiPaddleMode === 'wave') {
+          const amp = this._resolveMultiField(this.expMultiAmplitude, n, 'Amplitude');
+          if (amp.error) return amp.error;
+          const frq = this._resolveMultiField(this.expMultiFrequency, n, 'Frequency');
+          if (frq.error) return frq.error;
+        }
+        return null;
+      },
+
+      // Build the resolved expMultiExperiments[] array from current form inputs.
+      // Returns null on success, error string on failure.
+      _buildMultiExperiments() {
+        const n   = Number(this.expMultiNumRuns) || 0;
+        const dur = this._resolveMultiField(this.expMultiDuration, n, 'Duration');
+        if (dur.error) return dur.error;
+        const amp = this.expMultiPaddleMode === 'wave'
+          ? this._resolveMultiField(this.expMultiAmplitude, n, 'Amplitude') : { values: Array(n).fill(0), error: null };
+        if (amp.error) return amp.error;
+        const frq = this.expMultiPaddleMode === 'wave'
+          ? this._resolveMultiField(this.expMultiFrequency, n, 'Frequency') : { values: Array(n).fill(0), error: null };
+        if (frq.error) return frq.error;
+
+        const probeRaw = String(this.expMultiActiveProbes || '').trim();
+        const probeIndices = probeRaw.split(',').map(s => parseInt(s.trim(), 10)).filter(v => !isNaN(v) && v >= 1 && v <= 8);
+        if (!probeIndices.length) return 'Active probes: enter at least one valid index (1–8).';
+
+        const namePrefix = (this.expFields?.name || 'multi_run').trim();
+        const exps = [];
+        for (let i = 0; i < n; i++) {
+          const runName = `${namePrefix}_${i + 1}`;
+          const carriage = {
+            name:     runName,
+            duration: dur.values[i] ?? 30,
+            ...(this.expMultiSampleRate ? { sampleRate: Number(this.expMultiSampleRate) } : {}),
+          };
+          if (!this.expMultiLaserEnabled) {
+            carriage.outputChannels = ['nTime', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'];
+          }
+          const wave = {
+            name:         runName,
+            duration:     dur.values[i] ?? 30,
+            activeProbes: probeIndices,
+            signalType:   this.expMultiSignalType,
+            amplitude:    this.expMultiPaddleMode === 'wave' ? (amp.values[i] ?? 0) : 0,
+            frequency:    this.expMultiPaddleMode === 'wave' ? (frq.values[i] ?? 0) : 0,
+          };
+          exps.push({ carriage, wave, runName });
+        }
+        this.expMultiExperiments = exps;
+        return null;
+      },
+
+      // Send a multi-experiment Run to waveMakerProbeNode for signal preview only.
+      // Node validates all N, precomputes allPaddleSignals, reaches CONFIGUREPENDING.
+      // We then fetch each preview from REST and Reset the node without running anything.
+      async expMultiPreviewAll() {
+        const n = Number(this.expMultiNumRuns) || 0;
+        const listErr = this.expMultiValidateLists();
+        if (listErr) { this.expFlash = 'Error: ' + listErr; return; }
+        const buildErr = this._buildMultiExperiments();
+        if (buildErr) { this.expFlash = 'Error: ' + buildErr; return; }
+
+        this.expMultiPreviewed      = false;
+        this.expMultiPreviewSignals = [];
+        this.expFlash = 'Sending preview request to waveMakerProbeNode…';
+
+        // Build experiments array for wave node
+        const waveExps = this.expMultiExperiments.map(e => e.wave);
+        const namePrefix = (this.expFields?.name || 'multi_run').trim();
+        await this.sendCmd('waveMakerProbeNode', {
+          cmd: 'Run', params: { name: namePrefix, experiments: waveExps }
+        });
+
+        // Poll for CONFIGUREPENDING (or failure) — max 30 s
+        const tStart = Date.now();
+        await new Promise(resolve => {
+          const iv = setInterval(() => {
+            const st = this.nodes['waveMakerProbeNode']?.state;
+            if (st === 'CONFIGUREPENDING' || st === 'ERROR' || st === 'IDLE' || (Date.now() - tStart) > 30000) {
+              clearInterval(iv); resolve();
+            }
+          }, 500);
+        });
+
+        const finalState = this.nodes['waveMakerProbeNode']?.state;
+        if (finalState !== 'CONFIGUREPENDING') {
+          this.expFlash = `⚠ Preview setup failed — node returned ${finalState}. Check node log.`;
+          return;
+        }
+
+        // Fetch all N preview signals from REST (tagged as preview_{runName})
+        this.expFlash = 'Fetching signal previews…';
+        const previews = [];
+        for (let i = 0; i < n; i++) {
+          const { runName } = this.expMultiExperiments[i];
+          // MATLAB tags: preview_ + makeValidName(tag) — underscores replace invalid chars
+          const safeTag = 'preview_' + runName.replace(/[^a-zA-Z0-9_]/g, '_');
+          try {
+            const r = await fetch(`http://${location.hostname}:5000/data/waveMakerProbeNode?experimentName=${encodeURIComponent(safeTag)}&latest=true`);
+            const d = await r.json();
+            previews.push({ runName, tag: safeTag, data: r.ok ? d : null });
+          } catch (_e) {
+            previews.push({ runName, tag: safeTag, data: null });
+          }
+        }
+        this.expMultiPreviewSignals = previews;
+
+        // Reset waveMakerProbeNode — paddle never moved
+        await this.sendCmd('waveMakerProbeNode', { cmd: 'Reset' });
+        this.expMultiPreviewed = true;
+        this.expFlash = `Preview complete (${n} signals). Review, then click Configure Run 1 of ${n}.`;
+        setTimeout(() => { this.expFlash = ''; }, 10000);
+      },
+
+      // Configure run runIndex (1-based). Sends Run to both nodes.
+      async expMultiConfigure(runIndex) {
+        const err = this._buildMultiExperiments();
+        if (err) { this.expFlash = 'Error: ' + err; return; }
+        const exp = this.expMultiExperiments[runIndex - 1];
+        if (!exp) { this.expFlash = 'Error: run index out of range.'; return; }
+
+        this.expMultiCarriageReady = false;
+        this.expMultiWaveReady     = false;
+        this.expMultiSettleOK      = false;
+        this.expMultiSettleStatus  = '';
+        // Clear debug logs for this round
+        this.expDebugLogs['carriageNode']       = [];
+        this.expDebugLogs['waveMakerProbeNode'] = [];
+        this.expDebugLogs = { ...this.expDebugLogs };
+
+        await this.sendCmd('carriageNode',       { cmd: 'Run', params: exp.carriage });
+        await this.sendCmd('waveMakerProbeNode', { cmd: 'Run', params: exp.wave });
+        this.expFlash = `Configure sent for run ${runIndex} of ${this.expMultiNumRuns} — awaiting CONFIGUREPENDING…`;
+        setTimeout(() => { this.expFlash = ''; }, 8000);
+      },
+
+      expMultiRun() {
+        this.playTrainWhistle();
+        this.sendCmd('carriageNode',       { cmd: 'RunValid' });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'RunValid' });
+      },
+
+      expMultiAbort() {
+        this._expMultiSettleAbort = true;
+        this.expMultiSettleStatus = '';
+        this.expMultiSettleOK     = false;
+        this.sendCmd('carriageNode',       { cmd: 'Abort' });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'Abort' });
+        this.expFlash = 'Abort sent to both nodes.';
+        setTimeout(() => { this.expFlash = ''; }, 4000);
+      },
+
+      expMultiNext() {
+        this.expMultiCurrentRun++;
+        this.expMultiSettleOK     = false;
+        this.expMultiSettleStatus = '';
+        this.expMultiConfigure(this.expMultiCurrentRun);
+      },
+
+      // Called when both nodes have reached DONE for the current round.
+      _expMultiCheckBothDone(k) {
+        const cd = this.expMultiCarriageData;
+        const wd = this.expMultiWaveData;
+        if (cd[k] && wd[k]) {
+          // Both done — trigger settle (or skip if last round or paddleMode=none)
+          if (this.expMultiCurrentRun >= this.expMultiNumRuns) {
+            // Last round complete — no settle needed
+            this.expFlash = `All ${this.expMultiNumRuns} runs complete!`;
+          } else if (this.expMultiPaddleMode !== 'wave' || !this.expMultiSettleEnabled) {
+            this.expMultiSettleOK = true;
+          } else {
+            // Wait for both nodes to reach IDLE (POSTPROC may still be running)
+            const iv = setInterval(() => {
+              const cs = this.nodes['carriageNode']?.state;
+              const ws = this.nodes['waveMakerProbeNode']?.state;
+              if (cs === 'IDLE' && ws === 'IDLE') {
+                clearInterval(iv);
+                this._runSettleCollect(1);
+              }
+            }, 1000);
+          }
+        }
+      },
+
+      // Run a wave_probes_collect-equivalent, fetch REST data, check half-amplitude.
+      async _runSettleCollect(attempt) {
+        if (this._expMultiSettleAbort) { this._expMultiSettleAbort = false; return; }
+        const maxR = this.expMultiSettleMaxRetries;
+        this.expMultiSettleStatus = `Checking settle… attempt ${attempt} of ${maxR}`;
+
+        const probeRaw = String(this.expMultiActiveProbes || '').trim();
+        const probeIndices = probeRaw.split(',').map(s => parseInt(s.trim(), 10)).filter(v => !isNaN(v) && v >= 1 && v <= 8);
+        const settleName = `settle_check_r${this.expMultiCurrentRun}_a${attempt}`;
+        const waveParams = {
+          name:         settleName,
+          duration:     this.expMultiSettleDuration,
+          activeProbes: probeIndices,
+          signalType:   'sinusoidal',
+          amplitude:    0,
+          frequency:    0,
+        };
+
+        // Start settle collect on waveMakerProbeNode only
+        await this.sendCmd('waveMakerProbeNode', { cmd: 'Run', params: waveParams });
+
+        // Poll for CONFIGUREPENDING
+        await this._pollNodeState('waveMakerProbeNode', ['CONFIGUREPENDING', 'IDLE', 'ERROR'], 15000);
+        if (this.nodes['waveMakerProbeNode']?.state !== 'CONFIGUREPENDING') {
+          this.expMultiSettleStatus = '⚠ Settle collect setup failed.';
+          return;
+        }
+        await this.sendCmd('waveMakerProbeNode', { cmd: 'RunValid' });
+
+        // Poll for IDLE (POSTPROC complete, data saved)
+        await this._pollNodeState('waveMakerProbeNode', ['IDLE', 'ERROR'], (this.expMultiSettleDuration + 15) * 1000);
+        if (this._expMultiSettleAbort) { this._expMultiSettleAbort = false; return; }
+
+        // Fetch the settle collect data from REST
+        let halfAmps = [];
+        try {
+          const safeTag = settleName.replace(/[^a-zA-Z0-9_]/g, '_');
+          const url = `http://${location.hostname}:5000/data/waveMakerProbeNode?experimentName=${encodeURIComponent(safeTag)}&latest=true`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          // Use last 5 s of data: sampleRate from node (default 100 Hz) or infer from nTime
+          const nTimeIdx = columns.indexOf('nTime');
+          const totalRows = rows.length;
+          const last5sRows = nTimeIdx >= 0
+            ? rows.filter(r => {
+                const t = r[nTimeIdx];
+                const tMax = rows[totalRows - 1][nTimeIdx];
+                return (tMax - t) <= 5;
+              })
+            : rows.slice(-Math.min(500, totalRows));
+          for (const pi of probeIndices) {
+            // Column names: H1, H2, … or probe_1, probe_2, …
+            const colName = columns.find(c => c === `H${pi}` || c === `h${pi}` || c === `probe_${pi}`);
+            if (!colName) continue;
+            const ci  = columns.indexOf(colName);
+            const vals = last5sRows.map(r => Number(r[ci])).filter(v => !isNaN(v));
+            if (vals.length < 2) continue;
+            halfAmps.push((Math.max(...vals) - Math.min(...vals)) / 2);
+          }
+        } catch (e) {
+          this.expMultiSettleStatus = `⚠ Settle data fetch failed: ${e.message}`;
+          return;
+        }
+
+        const thresh  = this.expMultiSettleThreshold;
+        const allOK   = halfAmps.length > 0 && halfAmps.every(a => a < thresh);
+        const maxAmp  = halfAmps.length ? Math.max(...halfAmps).toFixed(4) : '—';
+        this.expMultiSettleStatus = allOK
+          ? `✓ Settled (max half-amp ${maxAmp} m < ${thresh} m)`
+          : `Attempt ${attempt}/${maxR}: max ${maxAmp} m ≥ threshold ${thresh} m`;
+
+        if (allOK) {
+          this.expMultiSettleOK = true;
+          return;
+        }
+        if (attempt < maxR) {
+          await this._runSettleCollect(attempt + 1);
+        } else {
+          this.expMultiSettleStatus = `⚠ Tank not settled after ${maxR} checks (max ${maxAmp} m). Verify manually before running next experiment.`;
+          // Still set OK so the user can manually proceed if they accept the risk
+          this.expMultiSettleOK = true;
+        }
+      },
+
+      // Helper: poll a node's MQTT-updated state until it's one of targetStates or timeout elapses.
+      _pollNodeState(nodeId, targetStates, timeoutMs) {
+        return new Promise(resolve => {
+          const tStart = Date.now();
+          const iv = setInterval(() => {
+            const st = this.nodes[nodeId]?.state;
+            if (targetStates.includes(st) || (Date.now() - tStart) > timeoutMs) {
+              clearInterval(iv); resolve();
+            }
+          }, 500);
+        });
+      },
+
+      // Open preview signal plot for multi-run (uses REST-stored preview tag)
+      async expMultiOpenPreview(runIndex) {
+        const sig = this.expMultiPreviewSignals[runIndex - 1];
+        if (!sig?.data) { this.expFlash = `No preview data for run ${runIndex}.`; return; }
+        try {
+          const { columns, rows } = this._parseRestResponse(sig.data);
+          const html = this.buildPlotHtml(`waveMakerProbeNode (preview ${runIndex})`, sig.runName, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) { this.expFlash = 'Error opening preview: ' + e.message; }
+      },
+
+      async onExpMultiPaddleModeChange() {
+        this.expMultiPreviewed = this.expMultiPaddleMode !== 'wave'; // wave mode requires preview
+        if (this.expMultiPaddleMode === 'wave') {
+          if (!Object.keys(this.actuatorProfiles).length) {
+            try {
+              const r = await fetch('/api/actuator-profiles');
+              if (r.ok) this.actuatorProfiles = await r.json();
+            } catch (_e) {}
+          }
+          this.expWaveSignalType = this.expMultiSignalType;
+          this._initExpWaveFormDefaults();
+        }
+      },
+
       async expDownload(nodeId = null) {
         const targetNode = nodeId || this.expNodeTarget;
         try {
@@ -1536,6 +2255,21 @@
           const runName = this.expFields?.name || `${targetNode}_latest`;
           const { columns, rows } = this._parseRestResponse(resp);
           const html = this.buildPlotHtml(targetNode, runName, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) {
+          this.expFlash = 'Error opening plot: ' + e.message;
+        }
+      },
+
+      async expOpenPlotByTag(nodeId, tag) {
+        try {
+          const safeTag = tag.replace(/[^a-zA-Z0-9_]/g, '_');
+          const url = `http://${location.hostname}:5000/data/${nodeId}?experimentName=${encodeURIComponent(safeTag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(nodeId, tag, columns, rows);
           window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
         } catch (e) {
           this.expFlash = 'Error opening plot: ' + e.message;
