@@ -7,7 +7,7 @@
 % USAGE (called by updater/pull_and_deploy.sh):
 %   matlab -batch "carriage_node('config/carriage_computer.json', 'carriage_computer')"
 %
-% The config file is the machine-level JSON (see config/carriage_computer.json.example).
+% The config file is the machine-level JSON (see config/carriage_computer.json).
 % The profile key selects the carriageNode section from that file.
 %
 % All shared MATLAB framework code lives in matlabCommon/.
@@ -73,7 +73,7 @@ function carriage_node(cfgFile, profile)
     %% 6. Main event loop — blocks here; all work is done in MQTT callbacks
     fprintf("[INFO] CarriageNode online. Waiting for commands...\n");
     while ~isempty(comm.mqttClient) && comm.mqttClient.Connected
-        pause(0.001);
+        pause(0.1);
     end
     fprintf("[INFO] CarriageNode: broker connection lost. Shutting down.\n");
 end

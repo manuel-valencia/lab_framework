@@ -97,6 +97,7 @@ class ExperimentManager(ABC):
         self.comm = comm
         self.rest = rest
         self.state = State.BOOT
+        self.prev_state = State.BOOT  # state before the most recent transition (used by subclasses for recovery logic)
         self.history = ["BOOT"]
         self.fsm_log = []
         
@@ -268,7 +269,7 @@ class ExperimentManager(ABC):
         """
         print(f"[ABORT] {self.fsm_tag}: {reason}")
         abort_msg = {
-            "state": "ABORT",
+            "state": "ERROR",
             "reason": reason,
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         }
@@ -310,7 +311,8 @@ class ExperimentManager(ABC):
     def log(self, level: str = "INFO", msg: str = "") -> None:
         """
         Unified logging method for nodes.
-        Sends to CommClient's /log topic and stores in message log buffer.
+        Publishes to the node's MQTT /log topic and appends to fsm_log.
+        fsm_log is written to disk at shutdown.
         
         Args:
             level: Log level (INFO, WARN, ERROR, DEBUG)
@@ -419,11 +421,11 @@ class ExperimentManager(ABC):
     
     def setup_current_experiment(self) -> None:
         """
-        Prepares the current experiment parameters.
-        This method should be called after configure_hardware() to set up
-        the current experiment's parameters and precompute any necessary data.
-        
-        Can be overridden by subclasses to implement specific setup logic.
+        Logs current experiment parameters before each run.
+        Called automatically by the framework inside _enter_configure_validate().
+        Override in subclasses to add node-specific pre-run setup (e.g. resetting
+        buffers, loading per-run params). Always call the base first:
+            super().setup_current_experiment()
         """
         if ("experiments" in self.experiment_spec.get("params", {}) and 
             self.experiment_spec["params"]["experiments"]):
@@ -452,8 +454,10 @@ class ExperimentManager(ABC):
     # Protected State Machine Core
     def transition(self, new_state: State) -> None:
         """
-        Handles state transitions, verifies legality before switching.
-        
+        Validates and executes a state change.
+        Sequence: validate → exit_state(prev) → update state → enter_state(new).
+        Also records prev_state for subclass recovery logic.
+
         Args:
             new_state: Target state to transition to
         """
@@ -463,6 +467,7 @@ class ExperimentManager(ABC):
             return
         
         prev = self.state
+        self.prev_state = prev  # record for subclass recovery (e.g. DAQ reinit after ERROR)
         self._exit_state(prev)
         self.state = new_state
         self.history.append(new_state.name)
@@ -475,12 +480,14 @@ class ExperimentManager(ABC):
     
     def _is_valid_transition(self, from_state: State, to_state: State) -> bool:
         """
-        Determines if a transition is allowed between two FSM states.
-        
+        Returns True if the transition is permitted.
+        IDLE and ERROR are implicit wildcard destinations — every state
+        can always transition to them regardless of the table below.
+
         Args:
             from_state: Current state
             to_state: Desired state
-            
+
         Returns:
             True if transition is allowed
         """
@@ -506,8 +513,9 @@ class ExperimentManager(ABC):
     
     def _enter_state(self, state: State) -> None:
         """
-        Logic executed upon entering a new state.
-        
+        Publishes the new state to the /status topic, then dispatches
+        to the appropriate entry handler.
+
         Args:
             state: New state being entered
         """
@@ -540,8 +548,10 @@ class ExperimentManager(ABC):
     
     def _exit_state(self, state: State) -> None:
         """
-        Logic executed before leaving a state.
-        
+        Dispatches to the exit handler for states that require cleanup before
+        leaving. States with no exit logic are silent — this is intentional,
+        not an omission.
+
         Args:
             state: Old state being exited
         """
@@ -557,6 +567,7 @@ class ExperimentManager(ABC):
     # Individual State Entry/Exit Implementations
     def _enter_idle(self) -> None:
         """Called on entry into the IDLE state"""
+        self.abort_requested = False
         self.stop_hardware()
     
     def _enter_calibrating(self) -> None:
@@ -627,18 +638,25 @@ class ExperimentManager(ABC):
     
     def _enter_post_proc(self) -> None:
         """
-        Handles default post-processing behavior for a node.
-        
-        This function collects experiment data after an experiment run. If data
-        exists in experiment_data, it attempts to store it as a CSV (if homogeneous),
-        otherwise falls back to newline-delimited JSON (JSONL). The saved file is tagged
-        using the experiment name (if available) or a timestamp to prevent overwrites.
-        
-        This method can be overridden by subclasses to implement node-specific
-        post-processing workflows.
+        Saves collected experiment data and advances the run sequence.
+
+        Data already in experiment_data is written to CSV (or JSONL fallback)
+        in a directory named <clientID>Data/. The file is tagged with the
+        experiment name (or a timestamp if no name is set) to prevent overwrites.
+        Data is also sent to the REST server via _send_exp_data().
+
+        In multi-experiment mode this method loops: it calls setup_current_experiment()
+        and transitions back to RUNNING for each remaining sub-experiment, then
+        transitions to DONE when all are complete.
+
+        Override in subclasses to add node-specific processing. Always call the
+        base last:
+            super()._enter_post_proc()
         """
         print(f"{self.fsm_tag} [POSTPROC] Processing experiment data.")
-        
+
+        tag = self._get_experiment_tag()
+
         if self.experiment_data:
             # Always use clientID for base directory
             base_dir = f"{self.cfg['clientID']}Data"
@@ -651,13 +669,9 @@ class ExperimentManager(ABC):
                 else:
                     sub_folder_name = f"MultiExperiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 out_dir = os.path.join(base_dir, sub_folder_name)
-                
-                # Get current experiment name for file tag
-                tag = self._get_experiment_tag()
             else:
                 # Single experiment: use base directory directly
                 out_dir = base_dir
-                tag = self._get_experiment_tag()
             
             if not os.path.exists(out_dir):
                 os.makedirs(out_dir)
@@ -686,9 +700,7 @@ class ExperimentManager(ABC):
             self.current_experiment_index < len(self.experiment_spec["params"]["experiments"]) - 1):
             # Multi-experiment mode: gate on inter-run readiness before next run.
             try:
-                tag = self._get_experiment_tag()
                 self._send_exp_data(self.experiment_data, tag)  # Send data to REST server
-
                 # --- Inter-run readiness gate ---
                 sc = self._resolve_settle_check()
                 if sc.get("enabled", False):
@@ -708,7 +720,7 @@ class ExperimentManager(ABC):
             self.transition(State.DONE)
     
     def _enter_done(self) -> None:
-        """Wraps up after experiment completes"""
+        """Sends collected experiment data to the REST server, then transitions to IDLE."""
         print(f"{self.fsm_tag} [DONE] Experiment complete.")
         
         # Send experiment data to REST server
@@ -881,16 +893,16 @@ class ExperimentManager(ABC):
         return {**base, **override}
 
     def _exit_calibrating(self) -> None:
-        """Cleanup before leaving CALIBRATING"""
+        """Logs exit from CALIBRATING state."""
         print(f"{self.fsm_tag} [EXIT] Calibration complete.")
     
     def _exit_testing_sensor(self) -> None:
-        """Cleanup before leaving TESTINGSENSOR"""
+        """Stops hardware acquisition before leaving TESTINGSENSOR."""
         print(f"{self.fsm_tag} [EXIT] Stopping sensor diagnostics.")
         self.stop_hardware()
     
     def _exit_running(self) -> None:
-        """Cleanup before leaving RUNNING state"""
+        """Calls stop_hardware() before leaving RUNNING state."""
         self.stop_hardware()
     
     # Abstract Interfaces (to be implemented by subclasses)
@@ -911,7 +923,12 @@ class ExperimentManager(ABC):
     
     @abstractmethod
     def handle_run(self, cmd: Dict[str, Any]) -> None:
-        """Begin the main experiment routine using configuration parameters."""
+        """
+        Begin the main experiment routine using configuration parameters.
+        Subclasses must reset self.experiment_data = [] before appending
+        new records; otherwise multi-experiment runs will accumulate data
+        across sub-experiments.
+        """
         pass
     
     @abstractmethod

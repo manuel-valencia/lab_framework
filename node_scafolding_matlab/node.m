@@ -1,97 +1,103 @@
 % =========================================================================
 % node.m
 %
-% Top‑level, headless node for MATLAB-based control in Tow‑Tank Framework.
+% Top-level headless launcher for a MATLAB node.
+% Copy this file into your node folder and rename it to match your node.
 %
-% USAGE (from a bash script or systemd service)
-%   matlab -batch "node('config/my_node_config.json')"
+% USAGE (called by updater/pull_and_deploy.sh):
+%   matlab -batch "node('config/<profile>.json', '<profile>')"
 %
-% * cfgFile is a JSON file that holds MQTT credentials, hardware
-%   parameters, and safety limits (see documentation).
+% The config file is the machine-level JSON for the computer this node runs on.
+% The profile key selects the node-specific section from that file.
 %
-% * All shared MATLAB framework code lives in matlabCommon/.
-%
-% * The node writes a timestamped log file to logs/.
-%
+% All shared MATLAB framework code lives in matlabCommon/.
+% Writes a timestamped log file to logs/.
 % =========================================================================
-function node(cfgFile)
+function node(cfgFile, profile)
     arguments
-        cfgFile (1,1) string  % e.g. "config/my_node_config.json"
+        cfgFile (1,1) string   % e.g. "config/my_computer.json"
+        profile (1,1) string   % e.g. "my_computer"
     end
-    
-    % CONFIGURATION FILE FORMAT:
-    % Your JSON config file should contain at minimum:
-    % {
-    %   "clientID": "myNodeName",
-    %   "brokerAddress": "localhost",
-    %   "brokerPort": 1883,
-    %   "restPort": 5000,
-    %   "hardware": {
-    %     "hasSensor": true,
-    %     "hasActuator": false
-    %   },
-    %   "verbose": true
-    % }
-    % See matlabCommon/README.md for complete configuration reference.
 
-    %% 0.  Bootstrap – path & logging
-    repoRoot = fileparts(mfilename('fullpath'));      % repo/node_scafolding_matlab/...
+    %% 0. Bootstrap — paths and logging
+    repoRoot = fileparts(mfilename('fullpath'));
     addpath(genpath(fullfile(repoRoot, '..', 'matlabCommon')));
-    logDir   = fullfile(repoRoot, "logs");
+
+    logDir = fullfile(repoRoot, '..', 'logs');
     if ~isfolder(logDir); mkdir(logDir); end
 
-    ts = char(datetime("now",'Format','yyyyMMdd-HHmmss'));
+    ts = char(datetime("now", 'Format', 'yyyyMMdd-HHmmss'));
     diary(fullfile(logDir, "node_" + ts + ".txt"));
     cleanupDiary = onCleanup(@() diary('off'));
 
-    disp("[INFO] Node booting…  " + ts);
-    dbstop if error
+    fprintf("[INFO] Node booting...  %s\n", ts);
 
     %% 1. Load configuration
-    cfg = jsondecode(fileread(cfgFile));
-    disp("[INFO] Configuration loaded from " + cfgFile);
-    
-    % Validate required configuration fields
-    requiredFields = ["clientID", "brokerAddress"];
+    % Replace 'myNode' with the key name for this node's section in the
+    % machine config JSON (e.g. 'carriageNode', 'waveMakerProbeNode').
+    NODE_SECTION = 'myNode';
+
+    machineConfig = jsondecode(fileread(cfgFile));
+    fprintf("[INFO] Loaded machine config from %s (profile: %s)\n", cfgFile, profile);
+
+    if ~isfield(machineConfig, NODE_SECTION)
+        error("[ERROR] Config file is missing '%s' section.", NODE_SECTION);
+    end
+
+    % Merge top-level broker settings with node-specific settings
+    cfg = machineConfig.(NODE_SECTION);
+    if ~isfield(cfg, 'brokerAddress');  cfg.brokerAddress = machineConfig.brokerAddress;  end
+    if ~isfield(cfg, 'brokerPort');     cfg.brokerPort    = machineConfig.brokerPort;     end
+    if ~isfield(cfg, 'restPort');       cfg.restPort      = machineConfig.restPort;       end
+    if ~isfield(cfg, 'verbose');        cfg.verbose       = machineConfig.verbose;        end
+
+    %% 2. Validate required fields
+    requiredFields = ["clientID", "brokerAddress", "hardware"];
     for field = requiredFields
         if ~isfield(cfg, field)
-            error("[ERROR] Missing required configuration field: %s", field);
+            error("[ERROR] Missing required config field: %s", field);
         end
     end
 
-    %% 2. Initialize communication and FSM manager
-    comm = CommClient(cfg);        % MQTT client for real-time commands and status
-    rest = RestClient(cfg);        % REST client for large data transfers
-    mgr = MyNodeManager(cfg, comm, rest);
+    % Uncomment and adapt depending on whether this node has a sensor,
+    % an actuator, or both:
+    %
+    % if ~isfield(cfg.hardware, 'hasSensor') || ~cfg.hardware.hasSensor
+    %     error("[ERROR] myNode requires hardware.hasSensor = true.");
+    % end
+    % if ~isfield(cfg.hardware, 'hasActuator') || ~cfg.hardware.hasActuator
+    %     error("[ERROR] myNode requires hardware.hasActuator = true.");
+    % end
 
-    %% 3. Wire MQTT commands to state machine
-    % Set the callback to route incoming MQTT messages to the FSM
-    comm.onMessageCallback = @mgr.onMessageCallback;
+    %% 3. Initialise communication and FSM manager
+    comm = CommClient(cfg);
+    rest = RestClient(cfg);
+    mgr  = MyNodeManager(cfg, comm, rest);
 
-    %% 4. Ensure graceful shutdown
+    %% 4. Wire MQTT message callback
+    comm.onMessageCallback = @(topic, msg) mgr.onMessageCallback(topic, msg);
+
+    %% 5. Graceful shutdown on exit
     finalizer = onCleanup(@() shutdownNode(comm, mgr));
 
-    %% 5. Main blocking loop
-    disp("[INFO] Entering main loop …  Ctrl‑C to quit.");
-    while comm.isOpen
-        pause(0.001);
+    %% 6. Main event loop — blocks here; all work is done in MQTT callbacks
+    fprintf("[INFO] Node online. Waiting for commands...\n");
+    while ~isempty(comm.mqttClient) && comm.mqttClient.Connected
+        pause(0.1);
     end
-    disp("[INFO] Main loop exited – clean shutdown.");
+    fprintf("[INFO] Node: broker connection lost. Shutting down.\n");
 end
 
-% ----------------------------------------------------------------------------
-
+% -------------------------------------------------------------------------
 function shutdownNode(comm, mgr)
-    %SHUTDOWNNODE  Cleanup hardware and close MQTT connection
     try
-        mgr.abort("Shutdown request");
+        mgr.shutdown();
     catch ME
-        warning("Manager abort failed: %s", '%s', ME.message);
+        warning(ME.identifier, '%s', ME.message);
     end
-
     try
-        comm.close();
+        comm.disconnect();
     catch ME
-        warning("Comm close failed: %s", '%s', ME.message);
+        warning(ME.identifier, '%s', ME.message);
     end
 end

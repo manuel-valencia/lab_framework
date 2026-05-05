@@ -22,6 +22,7 @@ Usage:
 
 import json
 import logging
+import socket
 import threading
 import time
 from collections import deque
@@ -148,7 +149,6 @@ class CommClient:
             ]
 
     def __del__(self):
-        """Destructor to ensure cleanup on object deletion."""
         try:
             self.disconnect()
             if hasattr(self, 'verbose') and self.verbose and hasattr(self, 'logger'):
@@ -292,10 +292,11 @@ class CommClient:
             if self.verbose:
                 self.logger.info("MQTT connection established")
         else:
-            error_msg = f"MQTT connection failed with code {rc}"
+            # Log the failure here. The connect() timeout loop raises the
+            # actual ConnectionError — raising here is silently swallowed
+            # by paho's internal network thread.
             if self.verbose:
-                self.logger.error(error_msg)
-            raise ConnectionError(error_msg)
+                self.logger.error(f"MQTT connection failed with code {rc}")
 
     def _on_disconnect(self, client, userdata, rc):
         """Callback for MQTT disconnection."""
@@ -370,7 +371,6 @@ class CommClient:
                 self.logger.warning("Skipped heartbeat: MQTT client is not connected")
             return
         
-        import socket
         try:
             local_ip = socket.gethostbyname(socket.gethostname())
         except Exception:

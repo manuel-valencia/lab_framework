@@ -25,7 +25,7 @@ classdef CommClient < handle
         publications        % Cell array of topics this node will publish to
 
         messageLog = {};    % Stores the last 1000 received messages
-        lastHeartbeat = NaT;% Last heartbeat timestamp
+        lastHeartbeat = NaT;
 
         defaultTopics       % Struct containing default MQTT topics for this client:
                             %   .cmd    - Command topic (e.g., '<clientID>/cmd')
@@ -120,7 +120,6 @@ classdef CommClient < handle
 
         % --- Destructor ---
         function delete(obj)
-            % DELETE - Destructor to ensure cleanup on object deletion
             obj.disconnect();
             if obj.verbose
                 fprintf('%s Object deleted and resources released.\n', obj.tag);
@@ -140,7 +139,7 @@ classdef CommClient < handle
                 end
 
                 if obj.verbose
-                    fprintf('%s connect() method reached.', obj.tag);
+                    fprintf('%s connect() method reached.\n', obj.tag);
                     fprintf('%s Attempting to connect to MQTT broker at %s:%d\n', obj.tag, obj.brokerAddress, obj.brokerPort);
                 end
 
@@ -214,7 +213,8 @@ classdef CommClient < handle
                     catch
                     end
 
-                    % Release object reference deterministically.
+                    % MATLAB only destroys the mqttclient when all references are cleared.
+                    % Assigning to [] alone is not sufficient — clear forces closure.
                     tmpClient = obj.mqttClient; %#ok<NASGU>
                     obj.mqttClient = [];
                     clear tmpClient;
@@ -357,10 +357,6 @@ classdef CommClient < handle
             end
 
             topic = sprintf('%s/%s', obj.clientID, char(suffix));
-
-            % if obj.verbose
-            %     fprintf('%s getFullTopic generated: %s\n', obj.tag, topic);
-            % end
         end
 
         function addToLog(obj, topic, msg)
@@ -380,10 +376,6 @@ classdef CommClient < handle
             if numel(obj.messageLog) > 1000
                 obj.messageLog(1) = [];
             end
-
-            % if obj.verbose
-            %     fprintf('%s Logged message on topic "%s" at %s\n', obj.tag, topic, string(entry.timestamp));
-            % end
         end
     end
 end

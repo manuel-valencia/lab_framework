@@ -61,7 +61,7 @@ classdef CarriageNodeManager < ExperimentManager
 
         % Hardware
         daqSession          % NI-DAQ session object
-        streamListener      % DataAvailable listener handle for Test streaming
+        streamListener      % logical flag — true while ScansAvailableFcn is active
     end
 
     methods
@@ -247,7 +247,6 @@ classdef CarriageNodeManager < ExperimentManager
             %   Reads 1 second of data with the test body already attached.
             %   Takes the mean voltage of each of the 6 SG channels as the bias.
             %   Saves biasVoltages (1x6) to carriageCalibration.mat.
-            %   This matches the biasData block in the original .m code.
             %
             % "motion_sensors"
             %   Interactive point-by-point calibration for heave, pitch, roll.
@@ -327,10 +326,10 @@ classdef CarriageNodeManager < ExperimentManager
 
         function handleTest(obj, cmd) %#ok<INUSD>
             % handleTest
-            % Collects a fresh force bias then attaches a DataAvailable listener
-            % to the DAQ session. The hardware pushes data to onDataAvailableTest
-            % every time NotifyWhenDataAvailableExceeds samples arrive — no
-            % blocking read() in the hot path, no timer re-entrancy.
+            % Collects a fresh force bias then sets ScansAvailableFcn on the
+            % DAQ session. The hardware calls onDataAvailableTest every
+            % ScansAvailableFcnCount scans — no blocking read() in the hot path,
+            % no timer re-entrancy.
             % handleTest returns immediately; streaming stops when the FSM
             % leaves TESTINGSENSOR (Reset command) via stopHardware.
 
@@ -343,7 +342,8 @@ classdef CarriageNodeManager < ExperimentManager
                 if obj.daqSession.Running
                     stop(obj.daqSession);
                 end
-            catch; end
+            catch
+            end
             pause(0.1);   % let NI hardware fully flush and go idle
 
             obj.collectForceBias();
@@ -373,7 +373,10 @@ classdef CarriageNodeManager < ExperimentManager
             % read(src, blockSize) to pull them. Self-stops when FSM leaves TESTINGSENSOR.
             if obj.state ~= State.TESTINGSENSOR
                 obj.teardownStreamListener();
-                try; stop(src); catch; end
+                try
+                    stop(src);
+                catch
+                end
                 return;
             end
             try
@@ -397,7 +400,7 @@ classdef CarriageNodeManager < ExperimentManager
             end
         end
 
-        function handleRun(obj, cmd)
+        function handleRun(obj, cmd) %#ok<INUSD>
             % handleRun
             % Collects a fresh force bias (water ingress between runs), then reads
             % raw 10-channel DAQ data for the experiment duration.
@@ -451,12 +454,12 @@ classdef CarriageNodeManager < ExperimentManager
         function enterPostProc(obj)
             % enterPostProc (override)
             % Processing pipeline applied to raw DAQ data:
-            %   1. table2array conversion
-            %   2. Bias subtraction on SG channels (cols 1-6)
-            %   3. RunTimeMatrix multiplication → Fx,Fy,Fz,Mx,My,Mz
-            %   4. Zero-phase Cheby2 low-pass filter on force+sync channels
-            %   5. Spline calibration on heave/pitch/roll voltages (cols 8-10)
-            %   6. Build output struct array, assign to obj.experimentData
+            %   1. Bias subtraction on SG channels (cols 1-6)
+            %   2. RunTimeMatrix multiplication → Fx,Fy,Fz,Mx,My,Mz
+            %   3. Zero-phase Cheby2 low-pass filter on force+sync channels
+            %   4. Spline calibration on heave/pitch/roll voltages (cols 8-10)
+            %   5. Build output struct array, assign to obj.experimentData
+            %   6. Apply outputChannels filter (if configured)
             %   7. Call base class enterPostProc for CSV save + REST POST
 
             obj.log("INFO", "enterPostProc: processing raw force and motion data.");
@@ -571,8 +574,11 @@ classdef CarriageNodeManager < ExperimentManager
             % Ensure DAQ is stopped before a blocking read() — a running
             % continuous session would otherwise cause a re-entrancy conflict.
             try
-                if obj.daqSession.Running; stop(obj.daqSession); end
-            catch; end
+                if obj.daqSession.Running
+                    stop(obj.daqSession);
+                end
+            catch
+            end
             biasData         = read(obj.daqSession, seconds(1));
             biasArr          = mean(table2array(biasData), 1);  % 1x10 mean voltages
             obj.biasVoltages = biasArr(1:6);                    % cols 1-6 = SG0-SG5
@@ -615,7 +621,8 @@ classdef CarriageNodeManager < ExperimentManager
             if obj.prevState == State.ERROR
                 try
                     delete(obj.daqSession);
-                catch; end
+                catch
+                end
                 try
                     obj.initializeHardware(obj.cfg);
                     obj.log("INFO", "stopHardware: DAQ session recreated after ERROR recovery.");
@@ -651,7 +658,8 @@ classdef CarriageNodeManager < ExperimentManager
                 if ~isempty(obj.daqSession) && isvalid(obj.daqSession)
                     obj.daqSession.ScansAvailableFcn = [];
                 end
-            catch; end
+            catch
+            end
             obj.streamListener = false;
         end
 

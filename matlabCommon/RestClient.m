@@ -4,7 +4,6 @@ classdef RestClient < handle
     % to POST data to and optionally GET data from a central REST server.
     %
     % Designed for use in conjunction with CommClient for MQTT messaging.
-    % Intended primarily for use in `enterDone()` of ExperimentManager.
     %
     % Configuration:
     %   - brokerAddress: IP or hostname of REST server (e.g., 'localhost')
@@ -23,7 +22,7 @@ classdef RestClient < handle
         baseURL         % Base URL of REST server (e.g., 'http://localhost:5000')
         postEndpoint    % Full URL for POST, derived from clientID
         verbose = false % Optional verbosity
-        tag             % Optional log prefix (e.g., '[REST:waveGenNode]')
+        tag             % Precomputed log prefix, e.g., '[REST:clientID]'
         timeout = 15    % Default timeout in seconds
     end
 
@@ -183,8 +182,14 @@ classdef RestClient < handle
             tempName = tempname + ".csv";
             writetable(tbl, tempName);
             fid = fopen(tempName, 'r');
-            csvStr = fread(fid, '*char')';
-            fclose(fid);
+            try
+                csvStr = fread(fid, '*char')';
+                fclose(fid);
+            catch ME
+                fclose(fid);
+                delete(tempName);
+                rethrow(ME);
+            end
             delete(tempName);
         end
 

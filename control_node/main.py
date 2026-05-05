@@ -35,6 +35,14 @@ from pythonCommon.RestClient import RestClient
 WEBAPP_DIR    = os.path.join(REPO_ROOT, "network", "webapp")
 TEMPLATES_DIR = os.path.join(REPO_ROOT, "config", "templates")
 
+# Valid FSM state names. Status messages carrying any other state string are
+# rejected. Update this set whenever a new state is added to State.m / State enum.
+_VALID_STATES = frozenset({
+    'BOOT', 'IDLE', 'CALIBRATING', 'TESTINGSENSOR',
+    'CONFIGUREVALIDATE', 'CONFIGUREPENDING', 'TESTINGACTUATOR',
+    'RUNNING', 'POSTPROC', 'DONE', 'ERROR', 'UPDATING'
+})
+
 
 def setup_logging(log_dir: str) -> logging.Logger:
     os.makedirs(log_dir, exist_ok=True)
@@ -142,7 +150,7 @@ class ControlNode:
 
     def _start_web_server(self):
         """
-        Starts the Tow Tank web UI on port 8080 in a background daemon thread.
+        Starts the lab experiment web UI on port 8080 in a background daemon thread.
 
         Routes:
           GET  /                        — serves network/webapp/index.html
@@ -244,7 +252,7 @@ class ControlNode:
         Publish a structured command to a peripheral node's /cmd topic.
 
         Args:
-            node_id: The clientID of the target node (e.g. 'waveMakerProbeNode').
+            node_id: The clientID of the target node (e.g. 'sensorNode1').
             cmd:     Command dict, e.g. {"cmd": "Run", "params": {...}}.
         """
         topic = f"{node_id}/cmd"
@@ -301,11 +309,6 @@ class ControlNode:
         entry["last_seen_readable"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
         entry["status"]             = "online"
 
-        # Valid FSM states — reject anything else (e.g. "READY" from old firmware)
-        _VALID_STATES = {'IDLE', 'CONFIGUREVALIDATE', 'CONFIGUREPENDING',
-                         'RUNNING', 'POSTPROC', 'DONE', 'ERROR',
-                         'CALIBRATING', 'TESTINGSENSOR', 'TESTINGACTUATOR',
-                         'BOOT', 'UPDATING'}
         if isinstance(payload, dict):
             if "state" in payload:
                 state = payload["state"]

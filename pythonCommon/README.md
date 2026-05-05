@@ -1,473 +1,351 @@
-# Python Common Utilities
+﻿# pythonCommon
 
-## Overview
+Shared Python classes used by all experiment nodes in the framework. Every node - sensor, actuator, or hybrid - uses this package.
 
-The pythonCommon folder contains core reusable Python classes and architecture documentation for distributed experimentation nodes. These modules abstract MQTT communication, REST API data transfer, experiment control logic, and node state handling to streamline the development of automation nodes in the experimental framework.
+## Contents
 
-This package is designed to be integrated into node-level scripts where the combination of `CommClient.py`, `RestClient.py`, and `ExperimentManager.py` enables flexible, modular, and robust control.
+| File | Role |
+|---|---|
+| `CommClient.py` | MQTT communication layer |
+| `RestClient.py` | HTTP REST data transfer |
+| `ExperimentManager.py` | Abstract FSM controller; base class for every node (includes `State` enum) |
 
----
-
-## 📁 Contents
-
-### `CommClient.py`
-Handles MQTT-based communication for distributed nodes. Provides functions for connection management, message publishing/subscription, heartbeat handling, and message logging. Designed for actuator, sensor, and control/master nodes.
-
-#### Key Functions
-- `connect()`: Connects to the MQTT broker and subscribes to relevant topics.
-- `disconnect()`: Stops the heartbeat timer (if running), disconnects from the broker, and cleans up resources.
-- `comm_publish(topic, payload)`: Publishes a message to a specified topic.
-- `comm_subscribe(topic)`: Subscribes to a new topic at runtime and registers the default callback.
-- `comm_unsubscribe(topic)`: Unsubscribes from a given topic and updates the internal subscription list.
-- `send_heartbeat()`: Publishes a periodic status message.
-- `handle_message(topic, msg)`: Internal callback that logs incoming messages and routes them to user-defined callbacks.
-- `add_to_log(topic, msg)`: Saves a message into the capped internal log (max 1000 entries).
-- `get_full_topic(suffix)`: Returns the full topic path, e.g., `clientID/log`.
-
-#### Configuration Fields
-| Field                  | Type              | Default Value                                    | Description                                                       |
-| ---------------------- | ----------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
-| `clientID`             | `str`             | **Required**                                     | Unique node identifier for MQTT topic resolution.                 |
-| `brokerAddress`        | `str`             | `'localhost'`                                    | Hostname or IP address of MQTT broker.                            |
-| `brokerPort`           | `int`             | `1883`                                           | MQTT broker port for message publishing and subscription.         |
-| `subscriptions`        | `List[str]`       | `[clientID/cmd]`                                 | Topics this node subscribes to via MQTT (incoming commands).      |
-| `publications`         | `List[str]`       | `[clientID/status, clientID/data, clientID/log]` | Topics this node publishes to via MQTT (status, data, logs).      |
-| `onMessageCallback`    | `Callable`        | `None`                                           | Optional callback for routing inbound MQTT messages to handlers.  |
-| `heartbeatInterval`    | `float`           | `0` (disabled)                                   | Interval in seconds between automatic status pings to the broker. |
-| `keepAliveDuration`    | `int`             | `60`                                             | MQTT keep-alive timeout duration to maintain broker connection.   |
-| `verbose`              | `bool`            | `False`                                          | Enables verbose logging and debugging messages to stdout.         |
-
-#### Usage Examples
-
-**Minimal Node:**
-```python
-config = {
-    'clientID': 'sensorNode1',
-    'verbose': True
-}
-client = CommClient(config)
-client.connect()
-```
-
-**Node with heartbeat and command callback:**
-
-```python
-def message_handler(topic, msg):
-    print(f'Received: {msg}')
-
-config = {
-    'clientID': 'actuator1',
-    'heartbeatInterval': 5,
-    'onMessageCallback': message_handler,
-    'verbose': True
-}
-client = CommClient(config)
-client.connect()
-```
----
-### `RestClient.py`
-Provides a lightweight HTTP interface for experiment nodes to POST data to and GET data from a central REST server. Designed for use in conjunction with CommClient for MQTT messaging and primarily used for transferring large experiment datasets that exceed MQTT message limits.
-
-#### Key Functions
-- `send_data(data, **kwargs)`: Sends experiment data to REST server as CSV or JSONL format.
-- `fetch_data(**kwargs)`: Retrieves experiment data from REST server with various filtering options.
-- `check_health()`: Checks if the REST server is online by calling the /health endpoint.
-- `convert_to_csv(tbl)`: Static method that converts pandas DataFrame to CSV string for POST requests.
-
-#### Configuration Fields
-| Field                  | Type              | Default Value                                    | Description                                                       |
-| ---------------------- | ----------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
-| `clientID`             | `str`             | **Required**                                     | Unique node identifier for REST API endpoint resolution.          |
-| `brokerAddress`        | `str`             | `'localhost'`                                    | Hostname or IP address of REST server.                            |
-| `restPort`             | `int`             | `5000`                                           | REST server port for HTTP API access.                             |
-| `verbose`              | `bool`            | `False`                                          | Enables verbose logging and debugging messages to stdout.         |
-| `timeout`              | `int`             | `15`                                             | HTTP request timeout duration in seconds.                         |
-
-#### Usage Examples
-
-**Basic Data Posting:**
-```python
-config = {
-    'clientID': 'sensorNode1',
-    'verbose': True
-}
-rest_client = RestClient(config)
-
-# Send DataFrame data as CSV
-response = rest_client.send_data(dataframe, experiment_name='test1')
-
-# Send list of dicts as JSONL
-response = rest_client.send_data(data_list, experiment_name='test2', format='jsonl')
-```
-
-**Data Retrieval:**
-```python
-config = {'clientID': 'masterNode'}
-rest_client = RestClient(config)
-
-# Get latest data from a specific node
-latest_data = rest_client.fetch_data(clientID='sensorNode1', latest=True)
-
-# Get specific experiment data
-exp_data = rest_client.fetch_data(clientID='waveGenNode', experiment_name='wave_test_1', format='csv')
-```
-
-**Health Check:**
-```python
-config = {'clientID': 'healthChecker'}
-rest_client = RestClient(config)
-
-if rest_client.check_health():
-    print('REST server is online')
-else:
-    print('REST server is offline')
-```
+All three files must be importable before any node can run. Install dependencies with `pip install -r requirements.txt`.
 
 ---
-### `ExperimentManager.py`
-Abstract class defining the high-level logic controller for a node. Intended to be subclassed/inherited by developers to define how commands are handled. Provides integration with `CommClient` for inbound MQTT messages and `RestClient` for data transfer, while maintaining internal state using the `State` enumeration.
 
-#### State Enumeration
-The `State` enum defines the finite set of states for the automation framework:
+## CommClient.py
 
-| State              | Value | Description                                                                 |
-|-------------------|-------|-----------------------------------------------------------------------------|
-| `BOOT`            | 0     | Initial state entered immediately after node instantiation. Hardware and software are initializing. No communication is assumed. |
-| `IDLE`            | 1     | Default wait state where the node is connected to the broker and ready to receive commands, but no configuration or calibration has been issued. |
-| `CALIBRATING`     | 2     | The node is executing a calibration routine (e.g., bias collection, baseline alignment). |
-| `TESTINGSENSOR`   | 3     | The node is posting live sensor data for diagnostics or validation. |
-| `CONFIGUREVALIDATE` | 4   | The node is validating a received experiment configuration file against hardware constraints or experiment bounds and will send confirmation plots or error message if constraints are not met.|
-| `CONFIGUREPENDING`| 5     | A valid configuration was received but is pending user validation before running experimental equipment. |
-| `TESTINGACTUATOR` | 6     | The node is testing actuator functionality, motion response, or limits as a pre-check before full execution. |
-| `RUNNING`         | 7     | Active experiment state. The node is executing its assigned role (e.g., force collection, motion control, wave generation). |
-| `POSTPROC`        | 8     | Post-processing state for computing derived values, saving results, or finalizing logs before next experiment. |
-| `DONE`            | 9     | The node has completed its task and will send collected data over to user and reset equipment if needed. |
-| `ERROR`           | 10    | Fault state indicating failure during operation. The node should halt safely, log the fault, and await recovery instruction. |
+Manages the MQTT connection for a node: connection lifecycle, topic subscriptions, message publishing, heartbeat, and an in-memory message log.
 
-#### 🏗️ Constructor
+### Topic layout (defaults)
+
+| Topic | Direction | Content |
+|---|---|---|
+| `<clientID>/cmd` | Inbound | Experiment command JSON |
+| `<clientID>/status` | Outbound | FSM state updates and heartbeat |
+| `<clientID>/data` | Outbound | Experiment data |
+| `<clientID>/log` | Outbound | Structured log messages |
+
+Default topics are built from `clientID` automatically. Override by setting `cfg['subscriptions']` and `cfg['publications']`.
+
+### Constructor fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `clientID` | `str` | **Required** | Unique node identifier. Sets topic prefix and log tags. |
+| `brokerAddress` | `str` | `'localhost'` | Hostname or IP of the MQTT broker. |
+| `brokerPort` | `int` | `1883` | MQTT broker port. |
+| `subscriptions` | `list[str]` | `[clientID/cmd]` | Topics to subscribe to on connect. |
+| `publications` | `list[str]` | `[clientID/status, clientID/data, clientID/log]` | Topics this node publishes to. |
+| `onMessageCallback` | `Callable` | `None` | Called with `(topic, msg)` for every inbound message. Set to `mgr.on_message_callback` when using with ExperimentManager. |
+| `heartbeatInterval` | `float` | `0` (disabled) | Seconds between periodic heartbeat publishes. `0` disables the timer. |
+| `keepAliveDuration` | `int` | `60` | MQTT keep-alive window in seconds. |
+| `verbose` | `bool` | `False` | Prints all publish/subscribe activity to the console. |
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `connect()` | Connects to broker, subscribes to all configured topics, starts heartbeat timer if configured. |
+| `disconnect()` | Stops heartbeat timer, unsubscribes all topics, clears the MQTT client handle. |
+| `comm_publish(topic, payload)` | Publishes a string or JSON-serializable dict to a topic. |
+| `comm_subscribe(topic)` | Dynamically subscribes to a new topic at runtime; no-op if already subscribed. |
+| `comm_unsubscribe(topic)` | Unsubscribes from a topic and removes it from the internal list. |
+| `send_heartbeat()` | Publishes `{clientID, timestamp, health: "READY", ip}` to `<clientID>/status`. Called automatically by the timer. |
+| `handle_message(topic, msg)` | Internal callback wired to every subscription. Logs the message and forwards to `onMessageCallback`. |
+| `get_full_topic(suffix)` | Returns `'<clientID>/suffix'`. Used internally by ExperimentManager. |
+| `add_to_log(topic, msg)` | Appends `{timestamp, topic, message}` to `message_log`. Capped at 1000 entries (FIFO). |
+
+### Usage
 
 ```python
-mgr = ExperimentManager(cfg, comm, rest)
-```
-
-**Parameters:**
-- `cfg` - Configuration dict (includes MQTT topics and hardware flags)
-- `comm` - CommClient instance for MQTT messaging  
-- `rest` - RestClient instance for REST API communication
-
-**Example:**
-```python
-# Setup configuration
 cfg = {
     'clientID': 'sensorNode1',
-    'hardware': {'hasSensor': True}
+    'brokerAddress': '192.168.1.10',
+    'heartbeatInterval': 5,
+    'verbose': True
 }
 
-# Create communication clients
 comm = CommClient(cfg)
-rest = RestClient(cfg)
-
-# Create node manager
-mgr = MySensorManager(cfg, comm, rest)
+comm.connect()
 ```
 
-#### ⚙️ Subclass Implementation Requirements
-
-Developers extending `ExperimentManager` **must** implement the following methods:
-
-| Function              | Purpose                                                                 |
-|-----------------------|-------------------------------------------------------------------------|
-| `initialize_hardware` | Initializes node-specific sensors/actuators using the passed config.    |
-| `handle_calibrate`    | Handles sensor calibration logic when in the `CALIBRATING` state.       |
-| `handle_test`         | Executes testing logic for sensors or actuators, depending on command. |
-| `handle_run`          | Begins the main experiment routine using configuration parameters.      |
-| `configure_hardware`  | Validates and applies experiment configuration. Returns `True` if successful. |
-| `stop_hardware`       | Called during state exits to halt actuators or terminate readings.      |
-| `shutdown_hardware`   | Called only on full shutdown or object deletion (optional cleanup).     |
-
-#### 🧰 Developer-Accessible Public Methods
-
-| Method                 | Purpose                                                                                     |
-|------------------------|---------------------------------------------------------------------------------------------|
-| `handle_command(cmd)`  | Central entry point to route structured command JSON to the appropriate FSM transition.     |
-| `abort(reason)`        | Forces transition to `ERROR`, logs message, and calls `stop_hardware`.                      |
-| `get_state()`          | Returns the current FSM state as a string.                                                  |
-| `get_bias_table()`     | Returns the last loaded or computed sensor bias table.                                      |
-| `log(level, msg)`      | Unified logging method that publishes to MQTT /log topic and stores internally.             |
-| `on_message_callback(topic, msg)` | Generic MQTT message handler that decodes JSON and routes commands to handle_command. |
-| `shutdown()`           | Unified shutdown routine that saves logs, FSM history, and disconnects clients.             |
-| `setup_current_experiment()` | Prepares current experiment parameters (can be overridden by subclasses).               |
-
-#### 🔐 Protected FSM/Internal Utilities
-
-| Method                  | Functionality                                                                 |
-|--------------------------|-------------------------------------------------------------------------------|
-| `transition(new_state)` | Validates and applies FSM state transitions. Logs state entry/exit messages. |
-| `_is_valid_transition(from_state, to_state)` | Returns `True` if the requested state transition is permitted.          |
-| `_enter_state(state)`   | Publishes MQTT status and triggers state-specific entry logic.               |
-| `_exit_state(state)`    | Calls cleanup logic before exiting special states like `RUNNING`, etc.       |
-
-Each FSM state has a corresponding `_enter_<state>` and some have an `_exit_<state>` method. These can be extended in subclasses if finer control is needed, although the default base class implementations are typically sufficient for:
-
-- Logging
-- Command gating
-- Internal signaling
-
-#### 🧩 Configuration Input Structure
-
-The `cfg` dict passed into the ExperimentManager constructor should include:
-
-| Field                  | Description                                                                      |
-|------------------------|----------------------------------------------------------------------------------|
-| `clientID`             | **Required** - Unique node identifier used for logging and data file naming.     |
-| `hardware.hasSensor`   | Boolean flag to indicate sensor presence. Used for gatekeeping calibration/test. |
-| `hardware.hasActuator` | Boolean flag to indicate actuator presence. Used for gating actuator operations. |
-
-#### handle_command() Overview
-
-The `handle_command()` method routes incoming MQTT messages to the correct logic handler based on their `cmd` field. It validates inputs, manages state transitions, and invokes command-specific subclass methods.
-
-##### ✅ Supported Commands
-
-Below is a list of supported Commands and their effects. All commands must have the proper fields for the node to be able to properly handle the commands. However params list can be extended for node application and other fields can be added (i.e. timestamp) besides cmd and params without error.
-
-###### 1. `cmd = "Calibrate"`
-**Expected Format:**
-```python
-{"cmd": "Calibrate", "params": {"depth": 5.0}}
-{"cmd": "Calibrate", "params": {"finished": True}}
-```
-
-**State Transitions:**
-```
-IDLE → CALIBRATING (repeated)
-```
-
-**Notes:**
-- Collects and finalizes calibration points.
-- `finished=True` triggers slope/intercept fitting and returns to IDLE.
+When using with ExperimentManager, `onMessageCallback` is set to `mgr.on_message_callback` and `connect()` is called automatically by the ExperimentManager constructor - do not call it manually in that case.
 
 ---
 
-###### 2. `cmd = "Test"`
-**Expected Format:**
+## RestClient.py
+
+Provides HTTP POST and GET for experiment data transfer between nodes and the central REST server (`network/RestServer.py`). Used for datasets that are too large for MQTT.
+
+### Constructor fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `clientID` | `str` | **Required** | Node identifier. Sets the POST endpoint path. |
+| `brokerAddress` | `str` | `'localhost'` | Hostname or IP of the REST server. |
+| `restPort` | `int` | `5000` | REST server port. |
+| `verbose` | `bool` | `False` | Prints POST/GET results to console. |
+| `timeout` | `int` | `15` | HTTP request timeout in seconds. |
+
+POST endpoint is built as: `http://<brokerAddress>:<restPort>/data/<clientID>`
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `send_data(data, **kwargs)` | POSTs a pandas DataFrame (as CSV) or list of dicts (as JSONL) to the REST server. |
+| `fetch_data(**kwargs)` | GETs experiment data from the REST server with optional filtering. |
+| `check_health()` | GETs `/health` and returns `True` if the server responds with `status: "online"`. |
+| `convert_to_csv(tbl)` | Static. Converts a pandas DataFrame to a CSV string. Used internally by `send_data`. |
+
+### send_data options
+
 ```python
-{"cmd": "Test", "params": {"target": "sensor"}}
-{"cmd": "Test", "params": {"target": "actuator"}}
+# DataFrame is auto-detected as CSV; list of dicts as JSONL
+rest_client.send_data(data_frame, experiment_name='run_01')
+rest_client.send_data(data_list, experiment_name='run_02', format='jsonl')
 ```
 
-**State Transitions:**
-```
-IDLE → TESTINGSENSOR (if target == "sensor")
-IDLE → CONFIGUREVALIDATE (if target != "sensor")
+On network failure, `send_data` returns `{'status': 'error', 'message': ...}` rather than throwing.
+
+### fetch_data options
+
+```python
+# Get the most recent data stored for this node
+result = rest_client.fetch_data(latest=True)
+
+# Get a specific experiment by name
+result = rest_client.fetch_data(experiment_name='run_01', format='csv')
+
+# Get data from a different node
+result = rest_client.fetch_data(clientID='otherNode', latest=True)
 ```
 
-**Notes:**
-- Enables sensor/actuator diagnostics.
-- For sensor testing, goes directly to TESTINGSENSOR state.
-- For actuator testing, saves experiment_spec and validates configuration first.
-- Behavior is subclass-dependent.
+### Health check
+
+```python
+if not rest_client.check_health():
+    raise ConnectionError('REST server is not reachable.')
+```
+
+The ExperimentManager constructor calls `check_health()` automatically and raises if the server is unreachable. A running `network/RestServer.py` is required before any node can start.
 
 ---
 
-###### 3. `cmd = "Run"`
-**Expected Format:**
+## ExperimentManager.py
+
+Abstract FSM controller. Every node subclasses this and implements a fixed set of abstract methods for hardware interaction. The base class handles command routing, state transitions, logging, data saving, and shutdown.
+
+The `State` enum is defined in this file and is imported automatically when subclassing `ExperimentManager`.
+
+### State enum
+
+| State | Integer | Role |
+|---|---|---|
+| `BOOT` | 0 | Startup, before hardware initialization |
+| `IDLE` | 1 | Ready and waiting for commands |
+| `CALIBRATING` | 2 | Executing sensor calibration |
+| `TESTINGSENSOR` | 3 | Live sensor diagnostics |
+| `CONFIGUREVALIDATE` | 4 | Validating all experiment parameters before accepting any |
+| `CONFIGUREPENDING` | 5 | Valid config received, awaiting confirmation to run |
+| `TESTINGACTUATOR` | 6 | Actuator pre-run validation |
+| `RUNNING` | 7 | Experiment in progress |
+| `POSTPROC` | 8 | Saving data locally and to REST; loops back to RUNNING for each sub-experiment |
+| `DONE` | 9 | All experiments complete; transitions to IDLE |
+| `ERROR` | 10 | Fault state; reachable from any state |
+
+`IDLE` and `ERROR` are implicit wildcard destinations - any state may transition to either.
+
+### Subclassing
+
 ```python
-{"cmd": "Run", "params": {...}}
+from pythonCommon.ExperimentManager import ExperimentManager, State
+
+class MyNodeManager(ExperimentManager):
+    def initialize_hardware(self, cfg):           ...
+    def handle_calibrate(self, cmd):              ...
+    def handle_test(self, cmd):                   ...
+    def handle_run(self, cmd):                    ...
+    def configure_hardware(self, params) -> bool: ...
+    def stop_hardware(self):                      ...
+    def shutdown_hardware(self):                  ...
 ```
 
-**State Transitions:**
-```
-IDLE → CONFIGUREVALIDATE → CONFIGUREPENDING (if valid)
+See `node_scafolding_python/` for a complete template.
+
+### Required abstract methods
+
+| Method | Signature | Contract |
+|---|---|---|
+| `initialize_hardware` | `(self, cfg)` | Called once by the constructor after MQTT and REST are connected. Set up DAQ sessions, open ports, etc. |
+| `handle_calibrate` | `(self, cmd)` | Called on entry to `CALIBRATING`. Must call `self.transition(State.IDLE)` when done. Multi-step flows may loop back to `CALIBRATING`. |
+| `handle_test` | `(self, cmd)` | Called on entry to `TESTINGSENSOR` or `TESTINGACTUATOR`. Behavior depends on `cmd['params']['target']`. |
+| `handle_run` | `(self, cmd)` | Called on entry to `RUNNING`. Must reset `self.experiment_data = []` before appending new records, then call `self.transition(State.POSTPROC)` on success. On abort: clear data and return. |
+| `configure_hardware` | `(self, params) -> bool` | Called by `_enter_configure_validate` for each sub-experiment. Return `True` if parameters are valid and hardware is configured. Return `False` to reject. |
+| `stop_hardware` | `(self)` | Called on entry to `IDLE` and `ERROR`, and at exit from `RUNNING` and `TESTINGSENSOR`. Stop acquisitions and safe-state hardware. |
+| `shutdown_hardware` | `(self)` | Called once at the start of `shutdown()`. Full cleanup: release sessions, close files, etc. |
+
+### Optional overrideable methods
+
+| Method | When to override |
+|---|---|
+| `setup_current_experiment()` | Add per-run setup (reset buffers, load run-specific params). Always call the base first: `super().setup_current_experiment()`. |
+| `_enter_post_proc()` | Add node-specific post-processing (filtering, decoupling, derived values). Always call the base last: `super()._enter_post_proc()`. |
+| `on_message_callback(topic, msg)` | Override for nodes that subscribe to additional topics beyond `/cmd`. Default routes all messages to `handle_command`. |
+| `await_ready(sc)` | Override to implement inter-run settling logic. Base returns `True` immediately. Called between sub-experiments when `settleCheck['enabled'] = True`. |
+
+### Constructor
+
+```python
+mgr = MyNodeManager(cfg, comm, rest)
 ```
 
-**Notes:**
-- Saves `experiment_spec = cmd`.
-- Waits for RunValid confirmation.
+The constructor:
+1. Stores `cfg`, `comm`, `rest`
+2. Loads `calibrationGains.pkl` from the current working directory if present (silent if absent)
+3. Calls `comm.connect()` - do not call this separately
+4. Calls `rest.check_health()` - raises if the REST server is unreachable
+5. Calls `initialize_hardware(cfg)`
+6. Transitions to `IDLE`
+
+### Public methods
+
+| Method | Description |
+|---|---|
+| `handle_command(cmd)` | Main command entry point. Routes a decoded command dict to the appropriate FSM transition. Normally called via `on_message_callback`. |
+| `abort(reason)` | Publishes an ERROR status, sets `abort_requested = True`, calls `stop_hardware()`, and transitions to `ERROR`. |
+| `log(level, msg)` | Publishes a structured log entry to `<clientID>/log` and appends to `fsm_log`. Written to disk at shutdown. |
+| `get_state()` | Returns the current FSM state as a string. |
+| `get_bias_table()` | Returns the current sensor bias table loaded or computed by `handle_calibrate`. |
+| `get_experiment_data()` | Returns `experiment_data` from the last run. |
+| `shutdown()` | Saves MQTT log, FSM log, and FSM history to `<clientID>Logs/`, then disconnects. |
+| `on_message_callback(topic, msg)` | Default MQTT message handler. Decodes JSON and routes valid commands to `handle_command`. Override for additional topic handling. |
+| `setup_current_experiment()` | Logs current experiment parameters before each run. Called automatically by the framework. |
+
+### handle_command dispatch
+
+All commands arrive as JSON on `<clientID>/cmd` and are decoded by `on_message_callback` before reaching `handle_command`.
+
+| Command | Required fields | State transition | Notes |
+|---|---|---|---|
+| `Calibrate` | `cmd` | `IDLE -> CALIBRATING` | May loop: `CALIBRATING -> CALIBRATING` for multi-step flows |
+| `Test` | `cmd`, `params['target']` | `IDLE -> TESTINGSENSOR` (sensor) or `IDLE -> CONFIGUREVALIDATE` (actuator) | |
+| `Run` | `cmd`, `params` | `IDLE -> CONFIGUREVALIDATE -> CONFIGUREPENDING` | Waits for `RunValid` to proceed |
+| `TestValid` | `cmd` | `CONFIGUREPENDING -> TESTINGACTUATOR` | Uses params cached from the prior `Test` command |
+| `RunValid` | `cmd` | `CONFIGUREPENDING -> RUNNING` | |
+| `Reset` | `cmd` | `ANY -> IDLE` | Hard recovery |
+| `Abort` | `cmd` | `ANY -> ERROR` | Calls `abort()`; stops hardware immediately |
+| `Update` | `cmd` | `IDLE -> shutdown -> exit(42)` | Only accepted from IDLE. Publishes `UPDATING` status, shuts down cleanly, then exits with code 42 so `pull_and_deploy.sh` can re-pull and relaunch. |
+
+### Configuration dict
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `clientID` | `str` | **Required** | Unique node identifier. Used for MQTT topics, log filenames, and data directory names. |
+| `hardware['hasSensor']` | `bool` | `False` | Gates entry into `CALIBRATING` and `TESTINGSENSOR`. |
+| `hardware['hasActuator']` | `bool` | `False` | Gates entry into `TESTINGACTUATOR`. |
+| `hardware['settleCheck']` | `dict` | `{}` | Node-level inter-run settling defaults. See settleCheck below. |
+
+### settleCheck
+
+Controls the inter-run readiness gate in multi-experiment mode. Active between sub-experiments when `enabled = True`. Can be set at node level (`cfg['hardware']['settleCheck']`) or overridden per experiment run (`experiment_spec['params']['settleCheck']`). Run-level config takes priority.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `False` | Master switch. If `False`, `await_ready` is skipped entirely. |
+| `threshold` | `float` | -- | Signal magnitude that counts as settled. Units are node-defined. |
+| `thresholdUnits` | `str` | -- | Human-readable unit label for log output. |
+| `holdDuration_s` | `float` | -- | Seconds the signal must remain below threshold before the next sub-experiment starts. |
+
+`await_ready()` in the base class returns `True` immediately (no-op). `INTER_RUN_READY` is published after settling.
+
+### Logging and log files
+
+Every call to `log()` publishes to MQTT and appends to the in-memory `fsm_log`. At `shutdown()`, the following files are written to `<clientID>Logs/`:
+
+| File | Content |
+|---|---|
+| `<clientID>_fsmLog.jsonl` | All entries from `log()` |
+| `<clientID>_commLog.jsonl` | All raw MQTT messages received by CommClient |
+| `<clientID>_fsmHistory.log` | Ordered list of every state transition |
 
 ---
 
-###### 4. `cmd = "TestValid"`
-**Expected Format:**
-```python
-{"cmd": "TestValid", "params": {...}}
-```
+## Complete configuration reference
 
-**State Transitions:**
-```
-CONFIGUREPENDING → TESTINGACTUATOR
-```
+All fields accepted by any of the three classes. A node typically needs a subset.
 
-**Notes:**
-- Optionally test actuator after validating Run configuration.
+| Field | Used by | Type | Default | Description |
+|---|---|---|---|---|
+| `clientID` | All | `str` | **Required** | Unique node identifier. |
+| `brokerAddress` | CommClient, RestClient | `str` | `'localhost'` | Hostname or IP of the MQTT broker and REST server. |
+| `brokerPort` | CommClient | `int` | `1883` | MQTT broker port. |
+| `restPort` | RestClient | `int` | `5000` | REST server port. |
+| `subscriptions` | CommClient | `list[str]` | `[clientID/cmd]` | MQTT topics to subscribe to. |
+| `publications` | CommClient | `list[str]` | `[clientID/status, clientID/data, clientID/log]` | MQTT topics this node publishes to. |
+| `onMessageCallback` | CommClient | `Callable` | `None` | Inbound message handler. |
+| `heartbeatInterval` | CommClient | `float` | `0` | Heartbeat period in seconds. `0` disables it. |
+| `keepAliveDuration` | CommClient | `int` | `60` | MQTT keep-alive window in seconds. |
+| `verbose` | CommClient, RestClient | `bool` | `False` | Verbose console output. |
+| `timeout` | RestClient | `int` | `15` | HTTP request timeout in seconds. |
+| `hardware['hasSensor']` | ExperimentManager | `bool` | `False` | Enables sensor states. |
+| `hardware['hasActuator']` | ExperimentManager | `bool` | `False` | Enables actuator states. |
+| `hardware['settleCheck']` | ExperimentManager | `dict` | `{}` | Inter-run settling config. |
 
----
-
-###### 5. `cmd = "RunValid"`
-**Expected Format:**
-```python
-{"cmd": "RunValid"}
-```
-
-**State Transitions:**
-```
-CONFIGUREPENDING → RUNNING
-```
-
-**Notes:**
-- Final approval for Run execution.
-- Only valid if already in CONFIGUREPENDING.
-
----
-
-###### 6. `cmd = "Reset"`
-**Expected Format:**
-```python
-{"cmd": "Reset"}
-```
-
-**State Transitions:**
-```
-ANY → IDLE
-```
-
-**Notes:**
-- Hard reset.
-- Used for recovery from errors or after test.
-
----
-
-###### 7. `cmd = "Abort"`
-**Expected Format:**
-```python
-{"cmd": "Abort"}
-```
-
-**State Transitions:**
-```
-ANY → ERROR
-```
-
-**Notes:**
-- Emergency stop.
-- Logs reason, stops hardware, transitions to ERROR.
-
----
-
-##### 📌 Summary Table
-
-| Command       | Required Fields              | Transition(s)                       | Handler         | Notes                                    |
-|---------------|-------------------------------|-------------------------------------|------------------|------------------------------------------|
-| `Calibrate`   | `cmd`, `params` or `finished` | IDLE → CALIBRATING (repeated)       | `handle_calibrate` | For collecting or finalizing calibration |
-| `Test`        | `cmd`, `params.target`        | IDLE → TESTINGSENSOR or IDLE → CONFIGUREVALIDATE | `handle_test`     | Sensor/actuator diagnostics              |
-| `Run`         | `cmd`, `params`               | IDLE → CONFIGUREVALIDATE → CONFIGUREPENDING | `handle_run`      | Requires config validation               |
-| `TestValid`   | `cmd`, `params` (optional)    | CONFIGUREPENDING → TESTINGACTUATOR  | `handle_test`     | For config preview                       |
-| `RunValid`    | `cmd`                         | CONFIGUREPENDING → RUNNING          | `handle_run`      | Final execution start                    |
-| `Reset`       | `cmd`                         | ANY → IDLE                          | —                | Hard stop                                |
-| `Abort`       | `cmd`                         | ANY → ERROR                         | `abort(reason)`  | Emergency abort                          |
-
----
-
-## 🧩 Complete Configuration Reference
-
-The following table provides a comprehensive reference of all configuration fields used across the pythonCommon classes. When creating a node, you typically need to provide a subset of these fields depending on which classes you're using.
-
-| Field                  | Used By           | Type              | Default Value                                    | Description                                                       |
-| ---------------------- | ----------------- | ----------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
-| `clientID`             | All Classes       | `str`             | **Required**                                     | Unique node identifier used across all components.                |
-| `brokerAddress`        | CommClient, RestClient | `str`        | `'localhost'`                                    | Hostname or IP address of MQTT broker and REST server.           |
-| `brokerPort`           | CommClient        | `int`             | `1883`                                           | MQTT broker port for message publishing and subscription.         |
-| `restPort`             | RestClient        | `int`             | `5000`                                           | REST server port for HTTP API access.                             |
-| `subscriptions`        | CommClient        | `List[str]`       | `[clientID/cmd]`                                 | Topics this node subscribes to via MQTT (incoming commands).      |
-| `publications`         | CommClient        | `List[str]`       | `[clientID/status, clientID/data, clientID/log]` | Topics this node publishes to via MQTT (status, data, logs).      |
-| `onMessageCallback`    | CommClient        | `Callable`        | `None`                                           | Optional callback for routing inbound MQTT messages to handlers.  |
-| `heartbeatInterval`    | CommClient        | `float`           | `0` (disabled)                                   | Interval in seconds between automatic status pings to the broker. |
-| `keepAliveDuration`    | CommClient        | `int`             | `60`                                             | MQTT keep-alive timeout duration to maintain broker connection.   |
-| `verbose`              | CommClient, RestClient | `bool`        | `False`                                          | Enables verbose logging and debugging messages to stdout.         |
-| `timeout`              | RestClient        | `int`             | `15`                                             | HTTP request timeout duration in seconds.                         |
-| `hardware.hasSensor`   | ExperimentManager | `bool`            | `False`                                          | Boolean flag to indicate sensor presence. Used for gatekeeping calibration/test. |
-| `hardware.hasActuator` | ExperimentManager | `bool`            | `False`                                          | Boolean flag to indicate actuator presence. Used for gating actuator operations. |
-
-### Example Complete Configuration
+### Example: sensor and actuator node
 
 ```python
-# Complete configuration for a sensor+actuator node
 cfg = {
     'clientID': 'hybridNode1',
     'brokerAddress': 'lab-server.local',
     'brokerPort': 1883,
     'restPort': 5000,
-    'verbose': True,
     'heartbeatInterval': 10,
-    'timeout': 30,
+    'verbose': False,
     'hardware': {
         'hasSensor': True,
         'hasActuator': True
     }
 }
 
-# Create all components
 comm = CommClient(cfg)
 rest = RestClient(cfg)
-mgr = MyHybridManager(cfg, comm, rest)
+mgr  = MyHybridManager(cfg, comm, rest)
 ```
 
 ---
 
-## 🧪 Testing
+## Testing
 
-The `test_comm_client.py`, `test_rest_client.py`, and `test_experiment_manager.py` in the `test/pythonCommon` folder provide comprehensive validation of all major methods for the classes in this package. Each test script is standalone and includes both positive and negative test cases.
+`test/pythonCommon/` contains standalone test scripts for each class:
 
-- **test_comm_client.py** - Tests MQTT communication, subscriptions, heartbeats, and message handling
-- **test_rest_client.py** - Tests REST API data posting, retrieval, health checks, and error handling  
-- **test_experiment_manager.py** - Tests ExperimentManager FSM logic using MockNodeManager implementation
+| Script | What it covers |
+|---|---|
+| `test_comm_client.py` | Connection, publish, subscribe, heartbeat, message log |
+| `test_rest_client.py` | POST, GET, health check, error handling |
+| `test_experiment_manager.py` | FSM transitions, command dispatch, abort, shutdown |
 
-### Running Tests
+Run with pytest from the repository root:
+
 ```bash
-# Run all tests
 python -m pytest test/pythonCommon/ -v
-
-# Run specific test file
-python -m pytest test/pythonCommon/test_experiment_manager.py -v
-
-# Run with verbose output
-python -m pytest test/pythonCommon/ -v -s
 ```
 
 ---
 
-## 🧰 Developer Notes
+## Dependencies
 
-- `CommClient` is designed to be thread-safe and event-driven.
-- `on_message_callback` generic function is provided in the ExperimentManager class but can be overridden for improved functionality if needed. (This goes for enter_state functions as well but be careful to test properly before deploying).
-- Heartbeats are optional but recommended for monitoring.
-- All message routing is done via function callbacks. Developers are encouraged to keep `CommClient` generic and place application logic in `ExperimentManager`.
-- `RestClient` handles large data transfers that exceed MQTT message limits.
-- Both `CommClient` and `RestClient` must be instantiated before creating an `ExperimentManager` instance.
-- More notes on using these classes together will be present in the `node_scaffolding_python` folder.
+- Python 3.9 or later
+- `paho-mqtt` - MQTT client library
+- `requests` - HTTP library for REST API interactions
+- `pandas` - data manipulation for CSV export
+- `flask` - required by `network/RestServer.py` (not imported by pythonCommon directly)
+- `scipy` - available for subclass use in post-processing
 
----
+Install all at once:
 
-## 📌 Dependencies
-
-### Required External Libraries
 ```bash
-# Install all required dependencies
-pip install paho-mqtt requests pandas pytest pytest-mock
+pip install -r pythonCommon/requirements.txt
 ```
-
-**External dependencies (not included in Python 3.7+):**
-- `paho-mqtt` - MQTT client library for distributed communication
-- `requests` - HTTP library for REST API interactions  
-- `pandas` - Data manipulation and analysis library
-- `pytest` - Testing framework (for development/testing)
-- `pytest-mock` - Mock library for pytest (for development/testing)
-
-**Built-in Python modules used:**
-- Standard library: `json`, `logging`, `threading`, `time`, `os`, `pickle`, `traceback`, `io`, `re`
-- Type system: `typing`, `abc`, `enum`, `collections`, `datetime`
-
-### Python Version Requirements
-- **Minimum:** Python 3.7+
-- **Recommended:** Python 3.9+
----

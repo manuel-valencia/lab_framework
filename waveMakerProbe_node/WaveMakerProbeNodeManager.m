@@ -909,10 +909,15 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             % streamOneBlock — called by timer during TESTINGSENSOR.
             % Reads blockSize scans, averages, applies gains, publishes heights.
             % Stops all timers when state leaves TESTINGSENSOR.
+            % Retained for use by MockWaveMakerProbeNodeManager in test/wavemakerprobe_node/.
             if obj.state ~= State.TESTINGSENSOR
                 tList = timerfindall;
                 for i = 1:numel(tList)
-                    try; stop(tList(i)); delete(tList(i)); catch; end
+                    try
+                        stop(tList(i));
+                        delete(tList(i));
+                    catch
+                    end
                 end
                 return;
             end
@@ -947,7 +952,10 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             % Called by NI-DAQ when blockSize scans are ready in the hardware buffer.
             if obj.state ~= State.TESTINGSENSOR
                 obj.teardownStreamListener();
-                try; stop(src); catch; end
+                try
+                    stop(src);
+                catch
+                end
                 return;
             end
             try
@@ -967,7 +975,11 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
 
         function finishActuatorTest(obj)
             % finishActuatorTest — called by singleShot timer after actuator test duration.
-            try; stop(obj.daqSession); write(obj.daqSession, 0); catch; end  % best-effort stop+zero
+            try
+                stop(obj.daqSession);
+                write(obj.daqSession, 0);
+            catch
+            end
             obj.log("INFO", "Actuator test complete.");
             obj.transition(State.IDLE);
         end
@@ -1033,9 +1045,18 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 drawnow limitrate;
             end
 
-            try; stop(obj.daqSession); catch; end
-            try; flush(obj.daqSession); catch; end
-            try; write(obj.daqSession, 0); catch; end  % zero paddle immediately after run
+            try
+                stop(obj.daqSession);
+            catch
+            end
+            try
+                flush(obj.daqSession);
+            catch
+            end
+            try
+                write(obj.daqSession, 0);   % zero paddle immediately after run
+            catch
+            end
 
             if didAbort
                 obj.isGenerating = false;
@@ -1113,8 +1134,8 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.teardownStreamListener();
             try
                 stop(obj.daqSession);
-                    flush(obj.daqSession);        % discard any unread background scans
-                    write(obj.daqSession, 0);   % safe-zero paddle
+                flush(obj.daqSession);        % discard any unread background scans
+                write(obj.daqSession, 0);   % safe-zero paddle
             catch ME
                 obj.log("WARN", sprintf("stopHardware DAQ error: %s", ME.message));
             end
@@ -1128,8 +1149,8 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
             obj.teardownStreamListener();
             try
                 stop(obj.daqSession);
-                    flush(obj.daqSession);        % discard any unread background scans
-                    write(obj.daqSession, 0);
+                flush(obj.daqSession);        % discard any unread background scans
+                write(obj.daqSession, 0);
                 delete(obj.daqSession);
             catch ME
                 obj.log("WARN", sprintf("shutdownHardware DAQ release error: %s", ME.message));
@@ -1247,7 +1268,11 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                     obj.log("INFO", sprintf("[awaitReady] Below threshold -- hold %.1f / %.1f s.", holdSec, holdNeeded));
                     if holdSec >= holdNeeded
                         obj.log("INFO", sprintf("[awaitReady] Ready confirmed after %.1f s.", toc(tStart)));
-                        try; stop(obj.daqSession); write(obj.daqSession, 0); catch; end
+                        try
+                            stop(obj.daqSession);
+                            write(obj.daqSession, 0);
+                        catch
+                        end
                         return;
                     end
                 else
@@ -1258,7 +1283,11 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 end
             end
 
-            try; stop(obj.daqSession); write(obj.daqSession, 0); catch; end
+            try
+                stop(obj.daqSession);
+                write(obj.daqSession, 0);
+            catch
+            end
         end
 
         function teardownStreamListener(obj)
@@ -1267,7 +1296,8 @@ classdef WaveMakerProbeNodeManager < ExperimentManager
                 if ~isempty(obj.daqSession) && isvalid(obj.daqSession)
                     obj.daqSession.ScansAvailableFcn = [];
                 end
-            catch; end
+            catch
+            end
             obj.streamListener = false;
         end
 

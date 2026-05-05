@@ -5,7 +5,6 @@ This class provides a lightweight HTTP interface for experiment nodes
 to POST data to and optionally GET data from a central REST server.
 
 Designed for use in conjunction with CommClient for MQTT messaging.
-Intended primarily for use in experiment completion workflows.
 
 Configuration:
   - brokerAddress: IP or hostname of REST server (e.g., 'localhost')
@@ -16,9 +15,8 @@ Primary Usage:
   - GET data for aggregation (optional, used by master nodes)
 
 Dependencies:
-  - requests library for HTTP operations
-  - pandas for CSV handling
-  - JSON for data serialization
+  - requests
+  - pandas
 """
 
 import requests
@@ -27,7 +25,6 @@ import pandas as pd
 import io
 import logging
 from typing import Union, Dict, List, Any, Optional
-# import time
 
 
 class RestClient:
