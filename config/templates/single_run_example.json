@@ -1,0 +1,7 @@
+{
+  "_description": "Single carriageNode run — acquires all 6 force/moment channels plus sync and 3 laser motion channels (heave/pitch/roll) for the specified duration. To exclude motion channels use single_run_force_only.json instead.",
+  "_nodeType": "carriageNode",
+  "name": "force_run_001",
+  "duration": 30,
+  "sampleRate": 50
+}

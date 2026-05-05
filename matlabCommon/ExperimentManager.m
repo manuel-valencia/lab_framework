@@ -1,5 +1,5 @@
 classdef (Abstract) ExperimentManager < handle
-    %EXPERIMENTMANAGER  Abstract state machine controller for Tow Tank nodes.
+    %EXPERIMENTMANAGER  Abstract state machine controller for experiment nodes.
     %
     % This class defines a generic state-driven experiment framework for hardware
     % nodes in automated laboratory systems. Nodes can represent either data
@@ -41,6 +41,27 @@ classdef (Abstract) ExperimentManager < handle
         currentExperimentIndex      % Index of the current experiment in multi-experiment mode
         FSMtag                      % Precomputed logging FSMtag, e.g., '[FSM:clientID]'
         cmd                         % Command string for current operation
+        logDir                      % Folder path for commLog / fsmLog output
+        abortRequested logical = false % Set true when Abort command is received
+        prevState   State           % State before the most recent transition (used by subclasses for recovery logic)
+        fsmFlushIdx  double = 0    % Number of FSMLog entries already flushed
+        commFlushIdx double = 0    % Number of comm.messageLog entries already flushed
+
+        % settleCheck — inter-run readiness configuration.
+        % Controls whether awaitReady() runs between sub-experiments in
+        % multi-experiment mode.  Populated from:
+        %   (1) cfg.hardware.settleCheck  (node-level default)
+        %   (2) experimentSpec.params.settleCheck  (per-run override, highest priority)
+        %
+        % Fields (all optional — omit to use defaults):
+        %   enabled        logical   — master switch (default false)
+        %   threshold      double    — signal magnitude that counts as "settled"
+        %                             (units defined by the node, e.g. m, degC)
+        %   thresholdUnits string    — human-readable unit label for logs
+        %   holdDuration_s double    — seconds the signal must stay below threshold
+        %                             before the next sub-experiment is started
+        % awaitReady() blocks indefinitely until settled — there is no timeout.
+        settleCheck                 % struct, see above
     end
 
     %==================================================================
@@ -49,7 +70,7 @@ classdef (Abstract) ExperimentManager < handle
     properties (Constant)
         % Supported command keywords
         validCommands = ["Calibrate", "Test", "Run", "TestValid", ...
-                         "RunValid", "Reset", "Abort"];
+                         "RunValid", "Reset", "Abort", "Update"];
     end
 
     %==================================================================
@@ -71,6 +92,7 @@ classdef (Abstract) ExperimentManager < handle
             obj.rest = rest;
             obj.state = State.BOOT;
             obj.history = "BOOT";
+            obj.logDir = sprintf('%sLogs', cfg.clientID);  % default; subclasses may override
 
             obj.FSMtag = sprintf('[FSM:%s]', obj.comm.clientID);
 
@@ -83,17 +105,28 @@ classdef (Abstract) ExperimentManager < handle
                 if isfield(hw, "hasActuator")
                     obj.hasActuator = hw.hasActuator;
                 end
+                % Load node-level settleCheck defaults from hardware config.
+                % Subclasses may further override obj.settleCheck in their
+                % own constructors after calling the base constructor.
+                if isfield(hw, 'settleCheck') && isstruct(hw.settleCheck)
+                    obj.settleCheck = hw.settleCheck;
+                else
+                    obj.settleCheck = struct();   % empty = all defaults used
+                end
+            else
+                obj.settleCheck = struct();
             end
 
-            % Will load calibrationGains.mat table if available in same node folder
+            % Load calibrationGains.mat table if available in current working dir.
+            % Many nodes use node-specific calibration files instead, so absence
+            % of calibrationGains.mat is expected and should stay silent.
             try
                 localGainPath = fullfile(pwd, "calibrationGains.mat");
                 S = load(localGainPath);
                 obj.biasTable = S.biasTable;
                 fprintf("%s Loaded previous calibration gains from: %s \n", obj.FSMtag, localGainPath);
             catch
-                % Initialize empty bias table when no file found
-                fprintf("[WARN] %s No previous calibrationGains.mat found. \n", obj.FSMtag);
+                % Initialize empty bias table when no file found.
                 obj.biasTable = struct();
             end
 
@@ -158,6 +191,20 @@ classdef (Abstract) ExperimentManager < handle
                         obj.transition(State.CONFIGUREVALIDATE);
 
                     case "TestValid"
+                        if obj.state ~= State.CONFIGUREPENDING
+                            warning("%s Invalid TestValid from state: %s", obj.FSMtag, string(obj.state));
+                            obj.log("WARN", "Invalid TestValid from state: " + string(obj.state));
+                            obj.transition(State.ERROR);
+                            return;
+                        end
+                        if ~isfield(obj.experimentSpec, "params") || isempty(obj.experimentSpec.params)
+                            obj.log("ERROR", "TestValid received but no pending Test parameters are cached.");
+                            obj.transition(State.ERROR);
+                            return;
+                        end
+                        % Reuse the original Test(actuator) parameters.
+                        % TestValid itself carries no params payload.
+                        obj.cmd = obj.experimentSpec;
                         obj.transition(State.TESTINGACTUATOR);
                         % obj.handleTest(cmd);
 
@@ -168,6 +215,7 @@ classdef (Abstract) ExperimentManager < handle
                             obj.transition(State.ERROR);
                             return;
                         end
+                        obj.abortRequested = false;
                         obj.transition(State.RUNNING);
                         
                     case "Reset"
@@ -175,30 +223,44 @@ classdef (Abstract) ExperimentManager < handle
 
                     case "Abort"
                         obj.abort("User request via command.");
+
+                    case "Update"
+                        % Update: only accepted from IDLE. Node publishes UPDATING,
+                        % shuts down cleanly, then exits with code 42 so that
+                        % pull_and_deploy.sh re-pulls the latest code and relaunches.
+                        if obj.state ~= State.IDLE
+                            obj.log("WARN", "Update command ignored — node is not IDLE (state: " + string(obj.state) + "). Reset first.");
+                            return;
+                        end
+                        obj.log("INFO", "Update command received. Shutting down for code update...");
+                        updateMsg = struct( ...
+                            "state",     "UPDATING", ...
+                            "timestamp", string(datetime('now','Format','yyyy-MM-dd HH:mm:ss.SSS')) ...
+                        );
+                        obj.comm.commPublish(obj.comm.getFullTopic("status"), jsonencode(updateMsg));
+                        try; obj.shutdown(); catch; end
+                        exit(42);
                 end
                 
             catch ME
-                % errMsg = sprintf("%s Command handler error: %s | cmd=%s | stack=%s", ...
-                %                     obj.FSMtag, ME.message, cmdName, strjoin(string({ME.stack.file}), ", "));
-                % obj.log("ERROR", errMsg);
-                % obj.transition(State.ERROR);
                 errMsg = sprintf("Command handler error:\n  → message: %s\n  → cmd: %s\n  → stack:\n%s", ...
                                     ME.message, cmdName, getReport(ME, 'extended', 'hyperlinks', 'off'));
-                obj.log("ERROR", errMsg);  % This may still fail if log() uses obj.FSMtag internally
+                obj.log("ERROR", errMsg);
                 obj.transition(State.ERROR);
             end
         end
 
         function abort(obj, reason)
-            % abort: Handles user-initiated aborts by publishing error state.
+            % abort: Stops hardware, publishes ERROR state, and transitions the FSM to ERROR.
             %   reason - Description for the abort cause
             fprintf("[ABORT] %s: %s \n", obj.FSMtag, reason);
             abortMsg = struct( ...
-                "state", "ABORT", ...
+                "state", "ERROR", ...
                 "reason", reason, ...
                 "timestamp", string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS')) ...
             );
             obj.comm.commPublish(obj.comm.getFullTopic("status"), jsonencode(abortMsg));
+            obj.abortRequested = true;
             try
                 obj.stopHardware();
             catch
@@ -218,13 +280,15 @@ classdef (Abstract) ExperimentManager < handle
             biasTable = obj.biasTable;
         end
 
+        function data = getExperimentData(obj)
+            % getExperimentData: Returns the experimentData struct array from the last run.
+            data = obj.experimentData;
+        end
+
         function log(obj, level, msg)
             % log - Unified logging method for nodes.
-            % Sends to CommClient's /log topic and stores in messageLog buffer.
-        
-            if nargin < 2
-                level = "INFO";
-            end
+            % Publishes to the node's MQTT /log topic and appends to obj.FSMLog.
+            % FSMLog is flushed to disk incrementally via flushLogs().
         
             timestamp = datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSSS');
             logMsg = struct( ...
@@ -232,13 +296,66 @@ classdef (Abstract) ExperimentManager < handle
                 "msg", msg, ...
                 "timestamp", string(timestamp) ...
             );
-        
+
             try
                 jsonMsg = jsonencode(logMsg);
-                obj.comm.commPublish(obj.comm.getFullTopic("log"), jsonMsg);
                 obj.FSMLog{end+1} = jsonMsg;
+
+                % During shutdown, CommClient may already be disconnected.
+                % Keep local logging without warning in that case.
+                canPublish = false;
+                if ~isempty(obj.comm) && isprop(obj.comm, 'mqttClient') && ~isempty(obj.comm.mqttClient)
+                    canPublish = obj.comm.mqttClient.Connected;
+                end
+
+                if canPublish
+                    obj.comm.commPublish(obj.comm.getFullTopic("log"), jsonMsg);
+                end
+                % Flush new entry to disk immediately
+                obj.flushLogs();
             catch ME
                 warning("%s Log publish failed: %s %s", obj.FSMtag, msg, ME.message);
+            end
+        end
+
+        function flushLogs(obj)
+            % flushLogs - Append any unflushed FSMLog and commLog entries to disk.
+            % Uses append mode so partial writes survive crashes. Called after
+            % every log() entry and at the start of shutdown().
+            try
+                if ~exist(obj.logDir, 'dir'); mkdir(obj.logDir); end
+
+                % --- FSMLog (node state machine messages) ---
+                newFSM = obj.FSMLog(obj.fsmFlushIdx+1:end);
+                if ~isempty(newFSM)
+                    fsmPath = fullfile(obj.logDir, sprintf('%s_fsmLog.jsonl', obj.cfg.clientID));
+                    fid = fopen(fsmPath, 'a');
+                    if fid ~= -1
+                        for i = 1:numel(newFSM)
+                            fprintf(fid, '%s\n', newFSM{i});
+                        end
+                        fclose(fid);
+                        obj.fsmFlushIdx = numel(obj.FSMLog);
+                    end
+                end
+
+                % --- CommClient message log ---
+                if isprop(obj.comm, 'messageLog') && ~isempty(obj.comm.messageLog)
+                    newComm = obj.comm.messageLog(obj.commFlushIdx+1:end);
+                    if ~isempty(newComm)
+                        commPath = fullfile(obj.logDir, sprintf('%s_commLog.jsonl', obj.cfg.clientID));
+                        fid = fopen(commPath, 'a');
+                        if fid ~= -1
+                            for i = 1:numel(newComm)
+                                fprintf(fid, '%s\n', jsonencode(newComm{i}));
+                            end
+                            fclose(fid);
+                            obj.commFlushIdx = numel(obj.comm.messageLog);
+                        end
+                    end
+                end
+            catch
+                % Silent — flushLogs must never throw inside log()
             end
         end
 
@@ -282,12 +399,15 @@ classdef (Abstract) ExperimentManager < handle
             
             % Step 1: Call user-defined hardware shutdown
             obj.shutdownHardware();
-        
+
+            % Flush any remaining log entries before disconnect
+            obj.flushLogs();
+
             % Step 2: Create per-node log folder
-            logDir = sprintf('%sLogs', obj.cfg.clientID);
-            if ~exist(logDir, 'dir')
-                mkdir(logDir);
+            if ~exist(obj.logDir, 'dir')
+                mkdir(obj.logDir);
             end
+            logDir = obj.logDir;
         
             % Step 3: Save CommClient MQTT message log
             logPath = fullfile(logDir, sprintf('%s_commLog.jsonl', obj.cfg.clientID));
@@ -310,7 +430,7 @@ classdef (Abstract) ExperimentManager < handle
             obj.comm.disconnect();
             obj.log("INFO", "CommClient disconnected.");
         
-            % Step 4: Save FSM state transition history and FSMLog
+            % Step 5: Save FSM state transition history and FSMLog
             historyPath = fullfile(logDir, sprintf('%s_fsmHistory.log', obj.cfg.clientID));
             try
                 fid = fopen(historyPath, 'w');
@@ -345,11 +465,11 @@ classdef (Abstract) ExperimentManager < handle
         end
 
         function setupCurrentExperiment(obj)
-            % setupCurrentExperiment - Prepares the current experiment parameters.
-            % This method should be called after configureHardware() to set up
-            % the current experiment's parameters and precompute any necessary data.
-            %
-            % It can be overridden by subclasses to implement specific setup logic.
+            % setupCurrentExperiment - Logs current experiment parameters before each run.
+            % Called automatically by the framework inside enterConfigureValidate().
+            % Override in subclasses to add node-specific pre-run setup (e.g. resetting
+            % buffers, loading per-run params). Always call the base first:
+            %   setupCurrentExperiment@ExperimentManager(obj);
 
             if isfield(obj.experimentSpec.params, 'experiments')
                 % Multi-experiment mode
@@ -388,8 +508,104 @@ classdef (Abstract) ExperimentManager < handle
     %% Protected State Machine Core
     %==================================================================
     methods (Access = protected)
+
+        % ------------------------------------------------------------------
+        % awaitReady — inter-run readiness hook.
+        %
+        % Called by enterPostProc between sub-experiments when settleCheck
+        % is enabled.  The base implementation always returns true immediately
+        % (no wait needed), which is correct for nodes with no physical
+        % settling behaviour (e.g. a pure data logger).
+        %
+        % Override in subclasses to implement domain-specific sensing:
+        %   WaveMakerProbeNodeManager  — half-amplitude below threshold for holdDuration_s
+        %
+        % Arguments:
+        %   sc  — resolved settleCheck struct (see resolveSettleCheck)
+        %
+        % The function blocks until the node is ready. The framework does not
+        % impose a timeout — awaitReady() is expected to return only when settled.
+        % ------------------------------------------------------------------
+        function ready = awaitReady(~, ~)
+            ready = true;   % base: no-op, always ready
+        end
+
+        % ------------------------------------------------------------------
+        % resolveSettleCheck — merges node-level and run-level settleCheck.
+        %
+        % Priority (highest → lowest):
+        %   1. experimentSpec.params.settleCheck   (per-run override)
+        %   2. obj.settleCheck                     (set from cfg in constructor / subclass)
+        %   3. built-in defaults
+        %
+        % Returns a fully populated struct with all required fields set.
+        % ------------------------------------------------------------------
+        function sc = resolveSettleCheck(obj)
+            % Built-in defaults
+            sc = struct( ...
+                'enabled',        false, ...
+                'threshold',      0, ...
+                'thresholdUnits', 'm', ...
+                'holdDuration_s', 5 ...
+            );
+
+            % Merge node-level config (obj.settleCheck)
+            if ~isempty(obj.settleCheck) && isstruct(obj.settleCheck)
+                sc = obj.mergeStructFields(sc, obj.settleCheck);
+            end
+
+            % Merge per-run override (experimentSpec.params.settleCheck)
+            if ~isempty(obj.experimentSpec) && isfield(obj.experimentSpec, 'params') ...
+                    && isfield(obj.experimentSpec.params, 'settleCheck') ...
+                    && isstruct(obj.experimentSpec.params.settleCheck)
+                sc = obj.mergeStructFields(sc, obj.experimentSpec.params.settleCheck);
+            end
+        end
+
+        % ------------------------------------------------------------------
+        % publishInterRunStatus — broadcasts an inter-run marker on the
+        % node's /status topic so other nodes (e.g. control node) can
+        % coordinate their own timing.
+        %
+        % Arguments:
+        %   eventName       — event string published to /status.
+        %                     Current framework only publishes 'INTER_RUN_READY'.
+        %                     'INTER_RUN_TIMEOUT' is a reserved name handled by
+        %                     the control node but not currently sent by any node.
+        %   nextExpIndex    — 1-based index of the sub-experiment about to run
+        % ------------------------------------------------------------------
+        function publishInterRunStatus(obj, eventName, nextExpIndex)
+            msg = struct( ...
+                'state',         eventName, ...
+                'nextExpIndex',  nextExpIndex, ...
+                'timestamp',     string(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS')) ...
+            );
+            if ~isempty(obj.experimentSpec) && isfield(obj.experimentSpec.params, 'experiments')
+                if nextExpIndex <= numel(obj.experimentSpec.params.experiments)
+                    expName = obj.experimentSpec.params.experiments(nextExpIndex).name;
+                    msg.nextExpName = expName;
+                end
+            end
+            obj.comm.commPublish(obj.comm.getFullTopic('status'), jsonencode(msg));
+            obj.log('INFO', sprintf('[POSTPROC] Published %s for sub-experiment %d.', eventName, nextExpIndex));
+        end
+
+        % ------------------------------------------------------------------
+        % mergeStructFields — shallow merge: fields in 'override' overwrite
+        % matching fields in 'base'; non-matching fields in 'base' are kept.
+        % ------------------------------------------------------------------
+        function s = mergeStructFields(~, base, override)
+            s = base;
+            fields = fieldnames(override);
+            for i = 1:numel(fields)
+                s.(fields{i}) = override.(fields{i});
+            end
+        end
+
         function transition(obj, newState)
-            % Handles state transitions, verifies legality before switching
+            % transition - Validates and executes a state change.
+            % Sequence: validate → exitState(prev) → update state → enterState(new)
+            % Also records prevState for subclass recovery logic.
             %   newState - Enum value of type State
             if ~obj.isValidTransition(obj.state, newState)
                 warning("%s Invalid transition: %s → %s", obj.FSMtag, string(obj.state), string(newState));
@@ -397,6 +613,7 @@ classdef (Abstract) ExperimentManager < handle
                 return;
             end
             prev = obj.state;
+            obj.prevState = prev;   % record for subclass recovery (e.g. DAQ reinit after ERROR)
             obj.exitState(prev);
             obj.state = newState;
             obj.history(end+1) = string(newState);
@@ -405,10 +622,11 @@ classdef (Abstract) ExperimentManager < handle
         end
 
         function tf = isValidTransition(~, fromState, toState)
-            % Determines if a transition is allowed between two FSM states
+            % isValidTransition - Returns true if the transition is permitted.
+            % IDLE and ERROR are implicit wildcard destinations — every state
+            % can always transition to them regardless of the table below.
             %   fromState - Current state (State enum)
-            %   toState   - Desired state (State enum)
-            %   tf        - Boolean result (true if allowed)
+            %   toState   - Desired next state (State enum)
             valid = struct( ...
                 'BOOT',              [State.IDLE], ...
                 'IDLE',              [State.CALIBRATING, State.TESTINGSENSOR, State.CONFIGUREVALIDATE], ...
@@ -432,7 +650,8 @@ classdef (Abstract) ExperimentManager < handle
         end
 
         function enterState(obj, s)
-            % Logic executed upon entering a new state
+            % enterState - Publishes the new state over MQTT, then dispatches
+            % to the corresponding enter* handler for that state.
             %   s - New state (enum value of State)
             fprintf("%s [ENTER STATE] %s \n", obj.FSMtag, string(s));
             statusMsg = struct("state", string(s), "timestamp", datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSSS'));
@@ -452,8 +671,10 @@ classdef (Abstract) ExperimentManager < handle
         end
 
         function exitState(obj, s)
-            % Logic executed before leaving a state
-            %   s - Old state being exited (enum value of State)
+            % exitState - Dispatches to the exit* handler for states that
+            % require cleanup before leaving. States with no exit logic are
+            % silent — this is intentional, not an omission.
+            %   s - State being exited (enum value of State)
             switch s
                 case State.RUNNING,        obj.exitRunning();
                 case State.CALIBRATING,    obj.exitCalibrating();
@@ -467,6 +688,7 @@ classdef (Abstract) ExperimentManager < handle
         %--------------------------------------------------------------
         function enterIdle(obj)
             % Called on entry into the IDLE state
+            obj.abortRequested = false;
             obj.stopHardware();
         end
 
@@ -498,7 +720,9 @@ classdef (Abstract) ExperimentManager < handle
         end
 
         function enterConfigureValidate(obj)
-            % Called on CONFIGUREVALIDATE; verifies parameters and proceeds
+            % enterConfigureValidate - Validates parameters for all sub-experiments before
+            % accepting any (fail-fast). On success, calls setupCurrentExperiment() and
+            % transitions to CONFIGUREPENDING. On failure, transitions back to IDLE.
             % Check if multi-experiment mode
             if isfield(obj.experimentSpec.params, 'experiments') && ~isempty(obj.experimentSpec.params.experiments)
                 experiments = obj.experimentSpec.params.experiments;
@@ -551,17 +775,24 @@ classdef (Abstract) ExperimentManager < handle
         end
 
         function enterPostProc(obj)
-            % enterPostProc - Handles default post-processing behavior for a node.
+            % enterPostProc - Saves collected experiment data and advances the run sequence.
             %
-            % This function collects experiment data after an experiment run. If data
-            % exists in obj.experimentData, it attempts to store it as a CSV (if homogeneous),
-            % otherwise falls back to newline-delimited JSON (JSONL). The saved file is tagged
-            % using the experiment name (if available) or a timestamp to prevent overwrites.
+            % Data already in obj.experimentData is written to CSV (or JSONL fallback)
+            % in a directory named <clientID>Data/. The file is tagged with the experiment
+            % name (or a timestamp if no name is set) to prevent overwrites. Data is also
+            % sent to the REST server via sendExpData().
             %
-            % This method can be overridden by subclasses to implement node-specific
-            % post-processing workflows.
+            % In multi-experiment mode this method loops: it calls setupCurrentExperiment()
+            % and transitions back to RUNNING for each remaining sub-experiment, then
+            % transitions to DONE when all are complete.
+            %
+            % Override in subclasses to add node-specific processing (e.g. filtering,
+            % decoupling). Always call the base last:
+            %   enterPostProc@ExperimentManager(obj)
 
             fprintf("%s [POSTPROC] Processing experiment data.\n", obj.FSMtag);
+
+            tag = obj.getExperimentTag();
 
             if ~isempty(obj.experimentData)
                 % Always use clientID for base directory
@@ -575,13 +806,9 @@ classdef (Abstract) ExperimentManager < handle
                         subFolderName = sprintf('MultiExperiment_%s', datestr(now, 'yyyymmdd_HHMMSS')); %#ok<TNOW1,DATST>
                     end
                     outDir = fullfile(baseDir, subFolderName);
-                    
-                    % Get current experiment name for file tag
-                    tag = obj.getExperimentTag();
                 else
                     % Single experiment: use base directory directly
                     outDir = baseDir;
-                    tag = obj.getExperimentTag();
                 end
                 
                 if ~exist(outDir, 'dir')
@@ -589,16 +816,17 @@ classdef (Abstract) ExperimentManager < handle
                 end
                 
                 tag = matlab.lang.makeValidName(tag);
+                localTs = datestr(now, 'yyyymmdd_HHMMSS'); %#ok<TNOW1,DATST>
                 
-                % Save current experiment data
+                % Save current experiment data (timestamped filename prevents overwrite)
                 try
                     T = struct2table(obj.experimentData);
-                    csvPath = fullfile(outDir, sprintf('%s_data_%s.csv', obj.cfg.clientID, tag));
+                    csvPath = fullfile(outDir, sprintf('%s_data_%s_%s.csv', obj.cfg.clientID, tag, localTs));
                     writetable(T, csvPath);
                     obj.log("INFO", sprintf("Experiment data saved to CSV: %s", csvPath));
                 catch ME
                     % Fallback: save as JSONL
-                    jsonlPath = fullfile(outDir, sprintf('%s_data_%s.jsonl', obj.cfg.clientID, tag));
+                    jsonlPath = fullfile(outDir, sprintf('%s_data_%s_%s.jsonl', obj.cfg.clientID, tag, localTs));
                     try
                         fid = fopen(jsonlPath, 'w');
                         for i = 1:numel(obj.experimentData)
@@ -615,9 +843,27 @@ classdef (Abstract) ExperimentManager < handle
             % Check if more experiments remain
             if isfield(obj.experimentSpec.params, 'experiments') && ...
                obj.currentExperimentIndex < length(obj.experimentSpec.params.experiments)
-                % Multi-experiment mode: setup next experiment
+                % Multi-experiment mode: block here until node signals ready,
+                % then set up and immediately run the next sub-experiment.
                 try
                     obj.sendExpData(obj.experimentData, tag);  % Send data to REST server
+
+                    % --- Inter-run readiness gate ---
+                    % Merge node-level and run-level settleCheck config, then
+                    % call awaitReady().  The base implementation returns
+                    % immediately (enabled=false); subclasses override to
+                    % implement domain-specific readiness sensing.
+                    % awaitReady() blocks until the node is ready — it does not
+                    % time out.  INTER_RUN_READY is always published on exit.
+                    sc = obj.resolveSettleCheck();
+                    if sc.enabled
+                        obj.log("INFO", sprintf( ...
+                            "[POSTPROC] settleCheck enabled — awaiting ready signal before sub-experiment %d.", ...
+                            obj.currentExperimentIndex + 1));
+                        obj.awaitReady(sc);
+                        obj.publishInterRunStatus("INTER_RUN_READY", obj.currentExperimentIndex + 1);
+                    end
+
                     obj.currentExperimentIndex = obj.currentExperimentIndex + 1;
                     obj.setupCurrentExperiment();
                     obj.transition(State.RUNNING);
@@ -653,7 +899,6 @@ classdef (Abstract) ExperimentManager < handle
                 return;
             end
 
-            % Handle optional tag parameter
             if nargin < 3 || isempty(tag)
                 tag = datestr(now, 'yyyymmdd_HHMMSS'); %#ok<TNOW1,DATST>
             end
@@ -704,16 +949,20 @@ classdef (Abstract) ExperimentManager < handle
 
         function enterError(obj)
             % Failsafe entry into ERROR state
+            try
+                obj.stopHardware();
+            catch
+            end
             fprintf("%s [ERROR] System faulted. \n", obj.FSMtag);
         end
 
         function exitCalibrating(obj)
-            % Cleanup before leaving CALIBRATING
+            % Logs exit from CALIBRATING state.
             fprintf("%s [EXIT] Calibration complete. \n", obj.FSMtag);
         end
 
         function exitTestingSensor(obj)
-            % Cleanup before leaving TESTINGSENSOR
+            % Stops hardware acquisition before leaving TESTINGSENSOR.
             fprintf("%s [EXIT] Stopping sensor diagnostics. \n", obj.FSMtag);
             obj.stopHardware();
         end
@@ -727,12 +976,27 @@ classdef (Abstract) ExperimentManager < handle
     %==================================================================
     %% Abstract Interfaces (to be implemented by subclasses)
     %==================================================================
+    % These methods are implicitly public. Access modifiers are omitted
+    % intentionally — adding methods(Abstract, Access=public) is redundant
+    % in MATLAB and changes nothing at runtime.
     methods (Abstract)
         initializeHardware(obj, cfg)
+
+        % Must call transition(State.IDLE) when calibration is complete.
+        % For multi-step flows (e.g. point-by-point collection), each
+        % intermediate command stays in CALIBRATING; only the final
+        % command (e.g. finished=true) transitions back to IDLE.
         handleCalibrate(obj, cmd)
+
         handleTest(obj, cmd)
+
+        % Must call transition(State.POSTPROC) on successful completion.
+        % If aborted mid-acquisition, clear rawData and return without transitioning.
         handleRun(obj, cmd)
+
+        % Must return true if params are valid, false to reject and stay IDLE.
         configureHardware(obj, params)
+
         stopHardware(obj)
         shutdownHardware(obj)
     end

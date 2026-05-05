@@ -1,0 +1,14 @@
+{
+  "_description": "Full tow-tank run - simultaneous carriageNode force/motion acquisition and waveMakerProbeNode wave generation and probe collection. Configure both nodes, then press Run to start them together.",
+  "_nodeType": "fullRun",
+  "name": "full_run_001",
+  "duration": 60,
+  "carriageNode": {
+    "sampleRate": 50,
+    "laserEnabled": true
+  },
+  "waveMakerProbeNode": {
+    "activeProbes": "1,2,3,4",
+    "paddleMode": "none"
+  }
+}

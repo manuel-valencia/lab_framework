@@ -25,7 +25,7 @@ classdef CommClient < handle
         publications        % Cell array of topics this node will publish to
 
         messageLog = {};    % Stores the last 1000 received messages
-        lastHeartbeat = NaT;% Last heartbeat timestamp
+        lastHeartbeat = NaT;
 
         defaultTopics       % Struct containing default MQTT topics for this client:
                             %   .cmd    - Command topic (e.g., '<clientID>/cmd')
@@ -120,7 +120,6 @@ classdef CommClient < handle
 
         % --- Destructor ---
         function delete(obj)
-            % DELETE - Destructor to ensure cleanup on object deletion
             obj.disconnect();
             if obj.verbose
                 fprintf('%s Object deleted and resources released.\n', obj.tag);
@@ -133,8 +132,14 @@ classdef CommClient < handle
             % If verbose is enabled, this method will print each major step.
 
             try
+                % Defensive: release any stale client handle from prior failed runs
+                % before creating a new mqttclient with the same ClientID.
+                if ~isempty(obj.mqttClient)
+                    obj.disconnect();
+                end
+
                 if obj.verbose
-                    fprintf('%s connect() method reached.', obj.tag);
+                    fprintf('%s connect() method reached.\n', obj.tag);
                     fprintf('%s Attempting to connect to MQTT broker at %s:%d\n', obj.tag, obj.brokerAddress, obj.brokerPort);
                 end
 
@@ -170,6 +175,11 @@ classdef CommClient < handle
                 end
 
             catch ME
+                % Ensure partially-created resources do not linger after failure.
+                try
+                    obj.disconnect();
+                catch
+                end
                 if obj.verbose
                     fprintf('%s ERROR during connection: %s\n', obj.tag, ME.message);
                 end
@@ -179,23 +189,42 @@ classdef CommClient < handle
 
         function disconnect(obj)
             % DISCONNECT - Cleanly unsubscribes and disconnects MQTT client
-            if ~isempty(obj.mqttClient) && obj.mqttClient.Connected
-                try
-                    if ~isempty(obj.heartbeatTimer) && isvalid(obj.heartbeatTimer)
-                        stop(obj.heartbeatTimer);
-                        obj.heartbeatTimer.TimerFcn = '';  % prevent race condition
-                        delete(obj.heartbeatTimer);
-                        obj.heartbeatTimer = [];
-                    end
-
-                    clear obj.mqttClient;
-
-                    if obj.verbose
-                        fprintf('%s Disconnected from broker and cleaned up.\n', obj.tag);
-                    end
-                catch ME
-                    warning('CommClient:DisconnectWarning', '%s Error while disconnecting: %s', obj.tag, ME.message);
+            try
+                % Stop heartbeat timer even if MQTT client is already disconnected.
+                if ~isempty(obj.heartbeatTimer) && isvalid(obj.heartbeatTimer)
+                    stop(obj.heartbeatTimer);
+                    obj.heartbeatTimer.TimerFcn = '';  % prevent race condition
+                    delete(obj.heartbeatTimer);
                 end
+                obj.heartbeatTimer = [];
+
+                if ~isempty(obj.mqttClient)
+                    % Best-effort unsubscribe before releasing handle.
+                    try
+                        if obj.mqttClient.Connected
+                            for i = 1:length(obj.subscriptions)
+                                topic = obj.subscriptions{i};
+                                try
+                                    unsubscribe(obj.mqttClient, Topic=topic);
+                                catch
+                                end
+                            end
+                        end
+                    catch
+                    end
+
+                    % MATLAB only destroys the mqttclient when all references are cleared.
+                    % Assigning to [] alone is not sufficient — clear forces closure.
+                    tmpClient = obj.mqttClient; %#ok<NASGU>
+                    obj.mqttClient = [];
+                    clear tmpClient;
+                end
+
+                if obj.verbose
+                    fprintf('%s Disconnected from broker and cleaned up.\n', obj.tag);
+                end
+            catch ME
+                warning('CommClient:DisconnectWarning', '%s Error while disconnecting: %s', obj.tag, ME.message);
             end
         end
 
@@ -235,7 +264,12 @@ classdef CommClient < handle
 
             payloadStruct.clientID = obj.clientID;
             payloadStruct.timestamp = datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss.SSS');
-            payloadStruct.state = 'READY';
+            payloadStruct.health = 'READY';  % connectivity ping — not an FSM state
+            try
+                payloadStruct.ip = char(java.net.InetAddress.getLocalHost().getHostAddress());
+            catch
+                payloadStruct.ip = 'unknown';
+            end
 
             jsonPayload = jsonencode(payloadStruct);
             topic = obj.getFullTopic('status');
@@ -323,10 +357,6 @@ classdef CommClient < handle
             end
 
             topic = sprintf('%s/%s', obj.clientID, char(suffix));
-
-            % if obj.verbose
-            %     fprintf('%s getFullTopic generated: %s\n', obj.tag, topic);
-            % end
         end
 
         function addToLog(obj, topic, msg)
@@ -346,10 +376,6 @@ classdef CommClient < handle
             if numel(obj.messageLog) > 1000
                 obj.messageLog(1) = [];
             end
-
-            % if obj.verbose
-            %     fprintf('%s Logged message on topic "%s" at %s\n', obj.tag, topic, string(entry.timestamp));
-            % end
         end
     end
 end

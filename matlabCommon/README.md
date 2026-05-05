@@ -1,434 +1,342 @@
-# MATLAB Common Utilities
+﻿# matlabCommon
 
-## Overview
+Shared MATLAB classes used by all experiment nodes in the framework. Every node — sensor, actuator, or hybrid — uses this package.
 
-The matlabCommon folder contains core reusable MATLAB classes and architecture documentation for distributed experimentation nodes. These modules abstract MQTT communication, REST API data transfer, experiment control logic, and node state handling to streamline the development of automation nodes in the experimental framework.
+## Contents
 
-This package is designed to be integrated into node-level scripts where the combination of `CommClient.m`, `RestClient.m`, `ExperimentManager.m`, and `State.m` enables flexible, modular, and robust control.
+| File | Role |
+|---|---|
+| `State.m` | Enum defining the 11 FSM states |
+| `CommClient.m` | MQTT communication layer |
+| `RestClient.m` | HTTP REST data transfer |
+| `ExperimentManager.m` | Abstract FSM controller; base class for every node |
+
+All four files must be on the MATLAB path before any node can run.
 
 ---
 
-## 📁 Contents
+## State.m
 
-### `CommClient.m`
-Handles MQTT-based communication for distributed nodes. Provides functions for connection management, message publishing/subscription, heartbeat handling, and message logging. Designed for actuator, sensor, and control/master nodes.
+Defines the 11 states of the `ExperimentManager` state machine as an `int32` enum. The file includes inline documentation of all permitted transitions — read it directly for the full transition table.
 
-#### Key Functions
-- `connect()`: Connects to the MQTT broker and subscribes to relevant topics.
-- `disconnect()`: Stops the heartbeat timer (if running), disconnects from the broker, and cleans up resources.
-- `commPublish(topic, payload)`: Publishes a message to a specified topic.
-- `commSubscribe(topic)`: Subscribes to a new topic at runtime and registers the default callback.
-- `commUnsubscribe(topic)`: Unsubscribes from a given topic and updates the internal subscription list.
-- `sendHeartbeat()`: Publishes a periodic status message.
-- `handleMessage(topic, msg)`: Internal callback that logs incoming messages and routes them to user-defined callbacks.
-- `addToLog(topic, msg)`: Saves a message into the capped internal log (max 1000 entries).
-- `getFullTopic(suffix)`: Returns the full topic path, e.g., `clientID/log`.
+| State | Integer | Role |
+|---|---|---|
+| `BOOT` | 0 | Startup, before hardware initialization |
+| `IDLE` | 1 | Ready and waiting for commands |
+| `CALIBRATING` | 2 | Executing sensor calibration |
+| `TESTINGSENSOR` | 3 | Live sensor diagnostics |
+| `CONFIGUREVALIDATE` | 4 | Validating all experiment parameters before accepting any |
+| `CONFIGUREPENDING` | 5 | Valid config received, awaiting confirmation to run |
+| `TESTINGACTUATOR` | 6 | Actuator pre-run validation |
+| `RUNNING` | 7 | Experiment in progress |
+| `POSTPROC` | 8 | Saving data locally and to REST; loops back to RUNNING for each sub-experiment |
+| `DONE` | 9 | All experiments complete; transitions to IDLE |
+| `ERROR` | 10 | Fault state; reachable from any state |
 
-#### `cfg` or Constructor Fields
-| Field                  | Type              | Default Value                                    | Description                                                       |
-| ---------------------- | ----------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
-| `clientID`             | `string`          | **Required**                                     | Unique node identifier for MQTT topic resolution.                 |
-| `brokerAddress`        | `string`          | `'localhost'`                                    | Hostname or IP address of MQTT broker.                            |
-| `brokerPort`           | `int`             | `1883`                                           | MQTT broker port for message publishing and subscription.         |
-| `subscriptions`        | `cell array`      | `{clientID/cmd}`                                 | Topics this node subscribes to via MQTT (incoming commands).      |
-| `publications`         | `cell array`      | `{clientID/status, clientID/data, clientID/log}` | Topics this node publishes to via MQTT (status, data, logs).      |
-| `onMessageCallback`    | `function_handle` | `[]`                                             | Optional callback for routing inbound MQTT messages to handlers.  |
-| `heartbeatInterval`    | `double`          | `0` (disabled)                                   | Interval in seconds between automatic status pings to the broker. |
-| `keepAliveDuration`    | `duration`        | `seconds(60)`                                    | MQTT keep-alive timeout duration to maintain broker connection.   |
-| `verbose`              | `logical`         | `false`                                          | Enables verbose logging and debugging messages to stdout.         |
+`IDLE` and `ERROR` are implicit wildcard destinations — any state may transition to either.
 
-#### Usage Examples
+---
 
-**Minimal Node:**
+## CommClient.m
+
+Manages the MQTT connection for a node: connection lifecycle, topic subscriptions, message publishing, heartbeat, and an in-memory message log.
+
+### Topic layout (defaults)
+
+| Topic | Direction | Content |
+|---|---|---|
+| `<clientID>/cmd` | Inbound | Experiment command JSON |
+| `<clientID>/status` | Outbound | FSM state updates and heartbeat |
+| `<clientID>/data` | Outbound | Experiment data |
+| `<clientID>/log` | Outbound | Structured log messages |
+
+Default topics are built from `clientID` automatically. Override by setting `cfg.subscriptions` and `cfg.publications`.
+
+### Constructor fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `clientID` | `string` | **Required** | Unique node identifier. Sets topic prefix and log tags. |
+| `brokerAddress` | `string` | `'localhost'` | Hostname or IP of the MQTT broker. |
+| `brokerPort` | `int` | `1883` | MQTT broker port. |
+| `subscriptions` | `cell array` | `{clientID/cmd}` | Topics to subscribe to on connect. |
+| `publications` | `cell array` | `{clientID/status, clientID/data, clientID/log}` | Topics this node publishes to. |
+| `onMessageCallback` | `function_handle` | `[]` | Called with `(topic, msg)` for every inbound message. Set to `@mgr.onMessageCallback` when using with ExperimentManager. |
+| `heartbeatInterval` | `double` | `0` (disabled) | Seconds between periodic heartbeat publishes. `0` disables the timer. |
+| `keepAliveDuration` | `duration` | `seconds(60)` | MQTT keep-alive window. |
+| `verbose` | `logical` | `false` | Prints all publish/subscribe activity to the console. |
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `connect()` | Connects to broker, subscribes to all configured topics, starts heartbeat timer if configured. |
+| `disconnect()` | Stops heartbeat timer, unsubscribes all topics, clears the MQTT client handle. |
+| `commPublish(topic, payload)` | Publishes a string or JSON string to a topic. Throws if not connected. |
+| `commSubscribe(topic)` | Dynamically subscribes to a new topic at runtime; no-op if already subscribed. |
+| `commUnsubscribe(topic)` | Unsubscribes from a topic and removes it from the internal list. |
+| `sendHeartbeat()` | Publishes `{clientID, timestamp, health: "READY", ip}` to `<clientID>/status`. Called automatically by the timer. |
+| `handleMessage(topic, msg)` | Internal callback wired to every subscription. Logs the message and forwards to `onMessageCallback`. |
+| `getFullTopic(suffix)` | Returns `'<clientID>/suffix'`. Used internally by ExperimentManager. |
+| `addToLog(topic, msg)` | Appends `{timestamp, topic, message}` to `messageLog`. Capped at 1000 entries (FIFO). |
+
+### Usage
+
 ```matlab
 cfg.clientID = 'sensorNode1';
-cfg.verbose = true;
-client = CommClient(cfg);
-client.connect();
-```
-
-**Node with heartbeat and command callback:**
-
-```matlab
-cfg.clientID = 'actuator1';
+cfg.brokerAddress = '192.168.1.10';
 cfg.heartbeatInterval = 5;
-cfg.onMessageCallback = @(topic, msg) disp(['Received: ', msg]);
 cfg.verbose = true;
-client = CommClient(cfg);
-client.connect();
+
+comm = CommClient(cfg);
+comm.onMessageCallback = @(topic, msg) disp(msg);
+comm.connect();
 ```
+
+When using with ExperimentManager, `onMessageCallback` is set to `@mgr.onMessageCallback` and `connect()` is called automatically by the ExperimentManager constructor — do not call it manually in that case.
+
 ---
-### `RestClient.m`
-Provides a lightweight HTTP interface for experiment nodes to POST data to and GET data from a central REST server. Designed for use in conjunction with CommClient for MQTT messaging and primarily used for transferring large experiment datasets that exceed MQTT message limits.
 
-#### Key Functions
-- `sendData(data, varargin)`: Sends experiment data to REST server as CSV or JSONL format.
-- `fetchData(varargin)`: Retrieves experiment data from REST server with various filtering options.
-- `checkHealth()`: Checks if the REST server is online by calling the /health endpoint.
-- `convertToCSV(tbl)`: Static method that converts MATLAB table to CSV string for POST requests.
+## RestClient.m
 
-#### `cfg` or Constructor Fields
-| Field                  | Type              | Default Value                                    | Description                                                       |
-| ---------------------- | ----------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
-| `clientID`             | `string`          | **Required**                                     | Unique node identifier for REST API endpoint resolution.          |
-| `brokerAddress`        | `string`          | `'localhost'`                                    | Hostname or IP address of REST server.                            |
-| `restPort`             | `int`             | `5000`                                           | REST server port for HTTP API access.                             |
-| `verbose`              | `logical`         | `false`                                          | Enables verbose logging and debugging messages to stdout.         |
-| `timeout`              | `numeric`         | `15`                                             | HTTP request timeout duration in seconds.                         |
+Provides HTTP POST and GET for experiment data transfer between nodes and the central REST server (`network/RestServer.py`). Used for datasets that are too large for MQTT.
 
-#### Usage Examples
+### Constructor fields
 
-**Basic Data Posting:**
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `clientID` | `string` | **Required** | Node identifier. Sets the POST endpoint path. |
+| `brokerAddress` | `string` | `'localhost'` | Hostname or IP of the REST server. |
+| `restPort` | `int` | `5000` | REST server port. |
+| `verbose` | `logical` | `false` | Prints POST/GET results to console. |
+| `timeout` | `numeric` | `15` | HTTP request timeout in seconds. |
+
+POST endpoint is built as: `http://<brokerAddress>:<restPort>/data/<clientID>`
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `sendData(data, ...)` | POSTs a MATLAB table (as CSV) or struct array (as JSON) to the REST server. |
+| `fetchData(...)` | GETs experiment data from the REST server with optional filtering. |
+| `checkHealth()` | GETs `/health` and returns `true` if the server responds with `status: "online"`. |
+| `convertToCSV(tbl)` | Static. Converts a MATLAB table to a CSV string. Used internally by `sendData`. |
+
+### sendData options
+
 ```matlab
-cfg.clientID = 'sensorNode1';
-cfg.verbose = true;
-restClient = RestClient(cfg);
-
-% Send table data as CSV
-response = restClient.sendData(dataTable, 'experimentName', 'test1');
-
-% Send struct array as JSONL
-response = restClient.sendData(dataStruct, 'experimentName', 'test2', 'format', 'jsonl');
+% Table is auto-detected as CSV; struct array as JSONL
+restClient.sendData(dataTable, 'experimentName', 'run_01');
+restClient.sendData(dataStruct, 'experimentName', 'run_02', 'format', 'jsonl');
 ```
 
-**Data Retrieval:**
+On network failure, `sendData` returns `struct("status", "error", "message", ...)` rather than throwing.
+
+### fetchData options
+
 ```matlab
-cfg.clientID = 'masterNode';
-restClient = RestClient(cfg);
+% Get the most recent data stored for this node
+result = restClient.fetchData('latest', true);
 
-% Get latest data from a specific node
-latestData = restClient.fetchData('clientID', 'sensorNode1', 'latest', true);
+% Get a specific experiment by name
+result = restClient.fetchData('experimentName', 'run_01', 'format', 'csv');
 
-% Get specific experiment data
-expData = restClient.fetchData('clientID', 'waveGenNode', 'experimentName', 'wave_test_1', 'format', 'csv');
+% Get data from a different node
+result = restClient.fetchData('clientID', 'otherNode', 'latest', true);
 ```
 
-**Health Check:**
-```matlab
-cfg.clientID = 'healthChecker';
-restClient = RestClient(cfg);
+### Health check
 
-if restClient.checkHealth()
-    fprintf('REST server is online\n');
-else
-    fprintf('REST server is offline\n');
+```matlab
+if ~restClient.checkHealth()
+    error('REST server is not reachable.');
 end
 ```
 
----
-### `State.m`
-This file defines a finite set of enumerated states for the automation framework. They will be the canonical states used by the ExperimentManager to coordinate the behavior of each node. This enumeration enables each node to track and transition through well-defined operational phases, ensuring that all components in the system—whether master or peripheral nodes—maintain coherent execution logic. It supports both system coordination and logging/telemetry clarity.
-
-#### Defined States and Their Responsibilities
-| State              | Integer | Description                                                                 |
-|-------------------|---------|-----------------------------------------------------------------------------|
-| `BOOT`            | 0       | Initial state entered immediately after node instantiation. Hardware and software are initializing. No communication is assumed. |
-| `IDLE`            | 1       | Default wait state where the node is connected to the broker and ready to receive commands, but no configuration or calibration has been issued. |
-| `CALIBRATING`     | 2       | The node is executing a calibration routine (e.g., bias collection, baseline alignment). |
-| `TESTINGSENSOR`   | 3       | The node is posting live sensor data for diagnostics or validation. |
-| `CONFIGUREVALIDATE` | 4     | The node is validating a received experiment configuration file against hardware constraints or experiment bounds and will send confirmation plots or error message if constraints are not met.|
-| `CONFIGUREPENDING`| 5       | A valid configuration was received but is pending user validation before running experimental equipment. |
-| `TESTINGACTUATOR` | 6       | The node is testing actuator functionality, motion response, or limits as a pre-check before full execution. |
-| `RUNNING`         | 7       | Active experiment state. The node is executing its assigned role (e.g., force collection, motion control, wave generation). |
-| `POSTPROC`        | 8       | Post-processing state for computing derived values, saving results, or finalizing logs before next experiment. |
-| `DONE`            | 9       | The node has completed its task and will send collected data over to user and reset equipment if needed. |
-| `ERROR`           | 10      | Fault state indicating failure during operation. The node should halt safely, log the fault, and await recovery instruction. |
+The ExperimentManager constructor calls `checkHealth()` automatically and throws if the server is unreachable. A running `network/RestServer.py` is required before any node can start.
 
 ---
 
-### `ExperimentManager.m`
-Abstract class defining the high-level logic controller for a node. Intended to be subclassed/inherited by devs to define how commands are handled. Provides integration with `CommClient` for inbound MQTT messages and `RestClient` for data transfer, while maintaining internal state using `State.m`.
+## ExperimentManager.m
 
-#### 🏗️ Constructor
+Abstract FSM controller. Every node subclasses this and implements a fixed set of abstract methods for hardware interaction. The base class handles command routing, state transitions, logging, data saving, and shutdown.
+
+### Subclassing
 
 ```matlab
-obj = ExperimentManager(cfg, comm, rest)
+classdef MyNodeManager < ExperimentManager
+    methods
+        function initializeHardware(obj, cfg)  ...  end
+        function handleCalibrate(obj, cmd)     ...  end
+        function handleTest(obj, cmd)          ...  end
+        function handleRun(obj, cmd)           ...  end
+        function tf = configureHardware(obj, params)  ...  end
+        function stopHardware(obj)             ...  end
+        function shutdownHardware(obj)         ...  end
+    end
+end
 ```
 
-**Parameters:**
-- `cfg` - Configuration struct (includes MQTT topics and hardware flags)
-- `comm` - CommClient instance for MQTT messaging  
-- `rest` - RestClient instance for REST API communication
+See `node_scafolding_matlab/` for a complete template.
 
-**Example:**
+### Required abstract methods
+
+| Method | Signature | Contract |
+|---|---|---|
+| `initializeHardware` | `(obj, cfg)` | Called once by the constructor after MQTT and REST are connected. Set up DAQ sessions, open ports, etc. |
+| `handleCalibrate` | `(obj, cmd)` | Called on entry to `CALIBRATING`. Must call `transition(State.IDLE)` when done. Multi-step flows may loop back to `CALIBRATING`. |
+| `handleTest` | `(obj, cmd)` | Called on entry to `TESTINGSENSOR` or `TESTINGACTUATOR`. Behavior depends on `cmd.params.target`. |
+| `handleRun` | `(obj, cmd)` | Called on entry to `RUNNING`. Must call `transition(State.POSTPROC)` on success. On abort: clear `rawData` and return. |
+| `configureHardware` | `(obj, params) → logical` | Called by `enterConfigureValidate` for each sub-experiment. Return `true` if parameters are valid and hardware is configured. Return `false` to reject. |
+| `stopHardware` | `(obj)` | Called on entry to `IDLE` and `ERROR`, and at exit from `RUNNING` and `TESTINGSENSOR`. Stop acquisitions and safe-state hardware. |
+| `shutdownHardware` | `(obj)` | Called once at the start of `shutdown()`. Full cleanup: release sessions, close files, etc. |
+
+### Optional overrideable methods
+
+| Method | When to override |
+|---|---|
+| `setupCurrentExperiment()` | Add per-run setup (reset buffers, load run-specific params). Always call the base first: `setupCurrentExperiment@ExperimentManager(obj)`. |
+| `enterPostProc()` | Add node-specific post-processing (filtering, decoupling, derived values). Always call the base last: `enterPostProc@ExperimentManager(obj)`. |
+| `onMessageCallback(topic, msg)` | Override for nodes that subscribe to additional topics beyond `/cmd`. Default routes all messages to `handleCommand`. |
+| `awaitReady(sc)` | Override to implement inter-run settling logic. Base returns `true` immediately. Called between sub-experiments when `settleCheck.enabled = true`. |
+
+### Constructor
+
 ```matlab
-% Setup configuration
-cfg.clientID = 'sensorNode1';
-cfg.hardware.hasSensor = true;
-
-% Create communication clients
-comm = CommClient(cfg);
-rest = RestClient(cfg);
-
-% Create node manager
-mgr = MySensorManager(cfg, comm, rest);
+mgr = MyNodeManager(cfg, comm, rest);
 ```
 
-#### ⚙️ Subclass Implementation Requirements
+The constructor:
+1. Stores `cfg`, `comm`, `rest`
+2. Loads `calibrationGains.mat` from the current working directory if present (silent if absent)
+3. Calls `comm.connect()` — do not call this separately
+4. Calls `rest.checkHealth()` — throws if the REST server is unreachable
+5. Calls `initializeHardware(cfg)`
+6. Transitions to `IDLE`
 
-Developers extending `ExperimentManager` **must** implement the following methods:
+### Public methods
 
-| Function              | Purpose                                                                 |
-|-----------------------|-------------------------------------------------------------------------|
-| `initializeHardware`  | Initializes node-specific sensors/actuators using the passed config.    |
-| `handleCalibrate`     | Handles sensor calibration logic when in the `CALIBRATING` state.       |
-| `handleTest`          | Executes testing logic for sensors or actuators, depending on command. |
-| `handleRun`           | Begins the main experiment routine using configuration parameters.      |
-| `configureHardware`   | Validates and applies experiment configuration (`cmd.params`). Returns `true` if successful. |
-| `stopHardware`        | Called during state exits to halt actuators or terminate readings.      |
-| `shutdownHardware`    | Called only on full shutdown or object deletion (optional cleanup).     |
+| Method | Description |
+|---|---|
+| `handleCommand(cmd)` | Main command entry point. Routes a decoded command struct to the appropriate FSM transition. Normally called via `onMessageCallback`. |
+| `abort(reason)` | Publishes an ERROR status, sets `abortRequested = true`, calls `stopHardware()`, and transitions to `ERROR`. |
+| `log(level, msg)` | Publishes a structured log entry to `<clientID>/log` and appends to `FSMLog`. Also flushes to disk immediately. |
+| `getState()` | Returns the current FSM state as a string. |
+| `getBiasTable()` | Returns the current sensor bias table loaded or computed by `handleCalibrate`. |
+| `getExperimentData()` | Returns `experimentData` from the last run. |
+| `shutdown()` | Saves MQTT log, FSM log, and FSM history to `<clientID>Logs/`, then disconnects. |
+| `flushLogs()` | Appends any unwritten `FSMLog` and `comm.messageLog` entries to disk in append mode. Called after every `log()` call. |
 
-#### 🧰 Developer-Accessible Public Methods
+### handleCommand dispatch
 
-| Method                 | Purpose                                                                                     |
-|------------------------|---------------------------------------------------------------------------------------------|
-| `handleCommand(cmd)`   | Central entry point to route structured command JSON to the appropriate FSM transition.     |
-| `abort(reason)`        | Forces transition to `ERROR`, logs message, and calls `stopHardware`.                       |
-| `getState()`           | Returns the current FSM state as a string.                                                  |
-| `getBiasTable()`       | Returns the last loaded or computed sensor bias table.                                      |
-| `log(level, msg)`      | Unified logging method that publishes to MQTT /log topic and stores internally.             |
-| `onMessageCallback(topic, msg)` | Generic MQTT message handler that decodes JSON and routes commands to handleCommand. |
-| `shutdown()`           | Unified shutdown routine that saves logs, FSM history, and disconnects clients.             |
-| `setupCurrentExperiment()` | Prepares current experiment parameters (can be overridden by subclasses).               |
+All commands arrive as JSON on `<clientID>/cmd` and are decoded by `onMessageCallback` before reaching `handleCommand`.
 
-#### 🔐 Protected FSM/Internal Utilities
+| Command | Required fields | State transition | Notes |
+|---|---|---|---|
+| `Calibrate` | `cmd` | `IDLE → CALIBRATING` | May loop: `CALIBRATING → CALIBRATING` for multi-step flows |
+| `Test` | `cmd`, `params.target` | `IDLE → TESTINGSENSOR` (sensor) or `IDLE → CONFIGUREVALIDATE` (actuator) | |
+| `Run` | `cmd`, `params` | `IDLE → CONFIGUREVALIDATE → CONFIGUREPENDING` | Waits for `RunValid` to proceed |
+| `TestValid` | `cmd` | `CONFIGUREPENDING → TESTINGACTUATOR` | Uses params cached from the prior `Test` command |
+| `RunValid` | `cmd` | `CONFIGUREPENDING → RUNNING` | |
+| `Reset` | `cmd` | `ANY → IDLE` | Hard recovery |
+| `Abort` | `cmd` | `ANY → ERROR` | Calls `abort()`; stops hardware immediately |
+| `Update` | `cmd` | `IDLE → shutdown → exit(42)` | Only accepted from IDLE. Publishes `UPDATING` status, shuts down cleanly, then exits with code 42 so `pull_and_deploy.sh` can re-pull and relaunch. |
 
-| Method                  | Functionality                                                                 |
-|--------------------------|-------------------------------------------------------------------------------|
-| `transition(newState)`  | Validates and applies FSM state transitions. Logs state entry/exit messages. |
-| `isValidTransition(from, to)` | Returns `true` if the requested state transition is permitted.          |
-| `enterState(s)`         | Publishes MQTT status and triggers state-specific entry logic.               |
-| `exitState(s)`          | Calls cleanup logic before exiting special states like `RUNNING`, etc.       |
+### Configuration struct
 
-Each FSM state has a corresponding `enter<State>` and some have an `exit<State>` method. These can be extended in subclasses if finer control is needed, although the default base class implementations are typically sufficient for:
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `clientID` | `string` | **Required** | Unique node identifier. Used for MQTT topics, log filenames, and data directory names. |
+| `hardware.hasSensor` | `logical` | `false` | Gates entry into `CALIBRATING` and `TESTINGSENSOR`. |
+| `hardware.hasActuator` | `logical` | `false` | Gates entry into `TESTINGACTUATOR`. |
+| `hardware.settleCheck` | `struct` | `{}` | Node-level inter-run settling defaults. See settleCheck below. |
 
-- Logging
-- Command gating
-- Internal signaling
+### settleCheck
 
-#### 🧩 Configuration Input Structure
+Controls the inter-run readiness gate in multi-experiment mode. Active between sub-experiments when `enabled = true`. Can be set at node level (`cfg.hardware.settleCheck`) or overridden per experiment run (`experimentSpec.params.settleCheck`). Run-level config takes priority.
 
-The `cfg` struct passed into the ExperimentManager constructor should include:
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `logical` | `false` | Master switch. If false, `awaitReady` is skipped entirely. |
+| `threshold` | `double` | — | Signal magnitude that counts as settled. Units are node-defined. |
+| `thresholdUnits` | `string` | — | Human-readable unit label for log output. |
+| `holdDuration_s` | `double` | — | Seconds the signal must remain below threshold before the next sub-experiment starts. |
 
-| Field                  | Description                                                                      |
-|------------------------|----------------------------------------------------------------------------------|
-| `clientID`             | **Required** - Unique node identifier used for logging and data file naming.     |
-| `hardware.hasSensor`   | Boolean flag to indicate sensor presence. Used for gatekeeping calibration/test. |
-| `hardware.hasActuator` | Boolean flag to indicate actuator presence. Used for gating actuator operations. |
+`awaitReady()` blocks indefinitely until the node signals ready — there is no timeout. `INTER_RUN_READY` is always published after settling.
 
-#### handleCommand() Overview
+### Logging and log files
 
-The `handleCommand()` method routes incoming MQTT messages to the correct logic handler based on their `cmd` field. It validates inputs, manages state transitions, and invokes command-specific subclass methods.
+Every call to `log()` does three things:
+1. Publishes a JSON entry to `<clientID>/log` over MQTT
+2. Appends to the in-memory `FSMLog`
+3. Flushes to disk immediately (append mode)
 
-##### ✅ Supported Commands
+At `shutdown()`, the following files are written to `<clientID>Logs/`:
 
-Below is a list of supported Commands and their effects. All commands must have the proper fields for the node to be able to properly handle the commands. However params list can be extended for node application and other fields can be added (i.e. timestamp) besides cmd and params without error.
-
-###### 1. `cmd = "Calibrate"`
-**Expected Format:**
-```matlab
-struct("cmd", "Calibrate", "params", struct("depth", 5.0))
-struct("cmd", "Calibrate", "params", struct("finished", true))
-```
-
-**State Transitions:**
-```
-IDLE → CALIBRATING (repeated)
-```
-
-**Notes:**
-- Collects and finalizes calibration points.
-- `finished=true` triggers slope/intercept fitting and returns to IDLE.
+| File | Content |
+|---|---|
+| `<clientID>_fsmLog.jsonl` | All entries from `log()` |
+| `<clientID>_commLog.jsonl` | All raw MQTT messages received by CommClient |
+| `<clientID>_fsmHistory.log` | Ordered list of every state transition |
 
 ---
 
-###### 2. `cmd = "Test"`
-**Expected Format:**
-```matlab
-struct("cmd", "Test", "params", struct("target", "sensor"))
-struct("cmd", "Test", "params", struct("target", "actuator"))
-```
+## Complete configuration reference
 
-**State Transitions:**
-```
-IDLE → TESTINGSENSOR (if target == "sensor")
-IDLE → CONFIGUREVALIDATE (if target != "sensor")
-```
+All fields accepted by any of the four classes. A node typically needs a subset.
 
-**Notes:**
-- Enables sensor/actuator diagnostics.
-- For sensor testing, goes directly to TESTINGSENSOR state.
-- For actuator testing, saves experimentSpec and validates configuration first.
-- Behavior is subclass-dependent.
+| Field | Used by | Type | Default | Description |
+|---|---|---|---|---|
+| `clientID` | All | `string` | **Required** | Unique node identifier. |
+| `brokerAddress` | CommClient, RestClient | `string` | `'localhost'` | Hostname or IP of the MQTT broker and REST server. |
+| `brokerPort` | CommClient | `int` | `1883` | MQTT broker port. |
+| `restPort` | RestClient | `int` | `5000` | REST server port. |
+| `subscriptions` | CommClient | `cell array` | `{clientID/cmd}` | MQTT topics to subscribe to. |
+| `publications` | CommClient | `cell array` | `{clientID/status, clientID/data, clientID/log}` | MQTT topics this node publishes to. |
+| `onMessageCallback` | CommClient | `function_handle` | `[]` | Inbound message handler. |
+| `heartbeatInterval` | CommClient | `double` | `0` | Heartbeat period in seconds. `0` disables it. |
+| `keepAliveDuration` | CommClient | `duration` | `seconds(60)` | MQTT keep-alive window. |
+| `verbose` | CommClient, RestClient | `logical` | `false` | Verbose console output. |
+| `timeout` | RestClient | `numeric` | `15` | HTTP request timeout in seconds. |
+| `hardware.hasSensor` | ExperimentManager | `logical` | `false` | Enables sensor states. |
+| `hardware.hasActuator` | ExperimentManager | `logical` | `false` | Enables actuator states. |
+| `hardware.settleCheck` | ExperimentManager | `struct` | `{}` | Inter-run settling config. |
 
----
-
-###### 3. `cmd = "Run"`
-**Expected Format:**
-```matlab
-struct("cmd", "Run", "params", struct(...))
-```
-
-**State Transitions:**
-```
-IDLE → CONFIGUREVALIDATE → CONFIGUREPENDING (if valid)
-```
-
-**Notes:**
-- Saves `experimentSpec = cmd`.
-- Waits for RunValid confirmation.
-
----
-
-###### 4. `cmd = "TestValid"`
-**Expected Format:**
-```matlab
-struct("cmd", "TestValid", "params", struct(...))
-```
-
-**State Transitions:**
-```
-CONFIGUREPENDING → TESTINGACTUATOR
-```
-
-**Notes:**
-- Optionally test actuator after validating Run configuration.
-
----
-
-###### 5. `cmd = "RunValid"`
-**Expected Format:**
-```matlab
-struct("cmd", "RunValid")
-```
-
-**State Transitions:**
-```
-CONFIGUREPENDING → RUNNING
-```
-
-**Notes:**
-- Final approval for Run execution.
-- Only valid if already in CONFIGUREPENDING.
-
----
-
-###### 6. `cmd = "Reset"`
-**Expected Format:**
-```matlab
-struct("cmd", "Reset")
-```
-
-**State Transitions:**
-```
-ANY → IDLE
-```
-
-**Notes:**
-- Hard reset.
-- Used for recovery from errors or after test.
-
----
-
-###### 7. `cmd = "Abort"`
-**Expected Format:**
-```matlab
-struct("cmd", "Abort")
-```
-
-**State Transitions:**
-```
-ANY → ERROR
-```
-
-**Notes:**
-- Emergency stop.
-- Logs reason, stops hardware, transitions to ERROR.
-
----
-
-##### 📌 Summary Table
-
-| Command       | Required Fields              | Transition(s)                       | Handler         | Notes                                    |
-|---------------|-------------------------------|-------------------------------------|------------------|------------------------------------------|
-| `Calibrate`   | `cmd`, `params` or `finished` | IDLE → CALIBRATING (repeated)       | `handleCalibrate` | For collecting or finalizing calibration |
-| `Test`        | `cmd`, `params.target`        | IDLE → TESTINGSENSOR or IDLE → CONFIGUREVALIDATE | `handleTest`     | Sensor/actuator diagnostics              |
-| `Run`         | `cmd`, `params`               | IDLE → CONFIGUREVALIDATE → CONFIGUREPENDING | `handleRun`      | Requires config validation               |
-| `TestValid`   | `cmd`, `params` (optional)    | CONFIGUREPENDING → TESTINGACTUATOR  | `handleTest`     | For config preview                       |
-| `RunValid`    | `cmd`                         | CONFIGUREPENDING → RUNNING          | `handleRun`      | Final execution start                    |
-| `Reset`       | `cmd`                         | ANY → IDLE                          | —                | Hard stop                                |
-| `Abort`       | `cmd`                         | ANY → ERROR                         | `abort(reason)`  | Emergency abort                          |
-
----
-
-## 🧩 Complete Configuration Reference
-
-The following table provides a comprehensive reference of all configuration fields used across the matlabCommon classes. When creating a node, you typically need to provide a subset of these fields depending on which classes you're using.
-
-| Field                  | Used By           | Type              | Default Value                                    | Description                                                       |
-| ---------------------- | ----------------- | ----------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
-| `clientID`             | All Classes       | `string`          | **Required**                                     | Unique node identifier used across all components.                |
-| `brokerAddress`        | CommClient, RestClient | `string`     | `'localhost'`                                    | Hostname or IP address of MQTT broker and REST server.           |
-| `brokerPort`           | CommClient        | `int`             | `1883`                                           | MQTT broker port for message publishing and subscription.         |
-| `restPort`             | RestClient        | `int`             | `5000`                                           | REST server port for HTTP API access.                             |
-| `subscriptions`        | CommClient        | `cell array`      | `{clientID/cmd}`                                 | Topics this node subscribes to via MQTT (incoming commands).      |
-| `publications`         | CommClient        | `cell array`      | `{clientID/status, clientID/data, clientID/log}` | Topics this node publishes to via MQTT (status, data, logs).      |
-| `onMessageCallback`    | CommClient        | `function_handle` | `[]`                                             | Optional callback for routing inbound MQTT messages to handlers.  |
-| `heartbeatInterval`    | CommClient        | `double`          | `0` (disabled)                                   | Interval in seconds between automatic status pings to the broker. |
-| `keepAliveDuration`    | CommClient        | `duration`        | `seconds(60)`                                    | MQTT keep-alive timeout duration to maintain broker connection.   |
-| `verbose`              | CommClient, RestClient | `logical`     | `false`                                          | Enables verbose logging and debugging messages to stdout.         |
-| `timeout`              | RestClient        | `numeric`         | `15`                                             | HTTP request timeout duration in seconds.                         |
-| `hardware.hasSensor`   | ExperimentManager | `logical`         | `false`                                          | Boolean flag to indicate sensor presence. Used for gatekeeping calibration/test. |
-| `hardware.hasActuator` | ExperimentManager | `logical`         | `false`                                          | Boolean flag to indicate actuator presence. Used for gating actuator operations. |
-
-### Example Complete Configuration
+### Example: sensor and actuator node
 
 ```matlab
-% Complete configuration for a sensor+actuator node
 cfg = struct();
-cfg.clientID = 'hybridNode1';
-cfg.brokerAddress = 'lab-server.local';
-cfg.brokerPort = 1883;
-cfg.restPort = 5000;
-cfg.verbose = true;
+cfg.clientID          = 'hybridNode1';
+cfg.brokerAddress     = 'lab-server.local';
 cfg.heartbeatInterval = 10;
-cfg.timeout = 30;
-cfg.hardware.hasSensor = true;
+cfg.verbose           = false;
+cfg.hardware.hasSensor   = true;
 cfg.hardware.hasActuator = true;
 
-% Create all components
 comm = CommClient(cfg);
+comm.onMessageCallback = @(t, m) mgr.onMessageCallback(t, m);
 rest = RestClient(cfg);
-mgr = MyHybridManager(cfg, comm, rest);
+mgr  = MyHybridManager(cfg, comm, rest);
 ```
 
 ---
 
-## 🧪 Testing
+## Testing
 
-The `CommClientTestScript.m`, `RestClientTestScript.m`, and `NodeManagerTestScript.m` in the `test/matlabCommon` folder provide comprehensive validation of all major methods for the classes in this package. Each test script is standalone and includes both positive and negative test cases.
+`test/matlabCommon/` contains standalone test scripts for each class:
 
-- **CommClientTestScript.m** - Tests MQTT communication, subscriptions, heartbeats, and message handling
-- **RestClientTestScript.m** - Tests REST API data posting, retrieval, health checks, and error handling  
-- **NodeManagerTestScript.m** - Tests ExperimentManager FSM logic using TestNodeManager mock implementation
+| Script | What it covers |
+|---|---|
+| `CommClientTestScript.m` | Connection, publish, subscribe, heartbeat, message log |
+| `RestClientTestScript.m` | POST, GET, health check, error handling |
+| `NodeManagerTestScript.m` | FSM transitions, command dispatch, abort, shutdown |
 
----
-
-## 🧰 Developer Notes
-
-- `CommClient` is designed to be thread-safe and event-driven.
-- `onMessageCallback` generic function is provided in the ExperimentManager.m class but can be overwritten for improved functionality if need. (This goes for enterState functions as well but be careful to test properly before deploying).
-- Heartbeats are optional but recommended for monitoring.
-- All message routing is done via function handles. Developers are encouraged to keep `CommClient` generic and place application logic in `ExperimentManager`.
-- `RestClient` handles large data transfers that exceed MQTT message limits.
-- Both `CommClient` and `RestClient` must be instantiated before creating an `ExperimentManager` instance.
-- More notes on using these classes together will be present in the `node_scafolding_matlab` folder.
+`TestNodeManager.m` is the mock subclass used by `NodeManagerTestScript.m`. `VirtualIntegrationTest/` contains a multi-node integration test.
 
 ---
 
-## 📌 Dependencies
+## Dependencies
 
-- MATLAB R2021b or later recommended
-- Industrial Communication Toolbox
-
----
+- MATLAB R2021b or later
+- Industrial Communication Toolbox (for `mqttclient`)
+- MATLAB Web Access (`webwrite`, `webread`) — included in base MATLAB

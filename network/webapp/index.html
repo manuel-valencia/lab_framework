@@ -1,0 +1,3537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tow Tank Control</title>
+
+  <!-- Dependencies from CDN — no build step required -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0f172a;
+      --surface:  #1e293b;
+      --border:   #334155;
+      --text:     #e2e8f0;
+      --muted:    #94a3b8;
+      --accent:   #38bdf8;
+    }
+    body { background: var(--bg); color: var(--text); font-family: ui-monospace, monospace; font-size: 14px; }
+    a { color: var(--accent); text-decoration: none; }
+
+    /* ── Layout ───────────────────────────────────────────────── */
+    header { display:flex; align-items:center; gap:12px; padding:12px 20px; background:var(--surface); border-bottom:1px solid var(--border); }
+    header h1 { font-size:1.1rem; letter-spacing:.05em; }
+    .conn-badge { margin-left:auto; font-size:.75rem; padding:3px 8px; border-radius:4px; font-weight:600; }
+
+    nav { display:flex; gap:4px; padding:10px 20px; background:var(--surface); border-bottom:1px solid var(--border); }
+    nav button { background:none; border:1px solid transparent; color:var(--muted); padding:5px 14px; border-radius:4px; cursor:pointer; font-family:inherit; font-size:.85rem; transition:.15s; }
+    nav button.active, nav button:hover { color:var(--text); border-color:var(--border); background:var(--bg); }
+
+    main { padding:20px; max-width:1400px; margin:0 auto; }
+    .tab { display:none; } .tab.active { display:block; }
+
+    /* ── Cards ────────────────────────────────────────────────── */
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px; }
+    .card-title { font-size:.7rem; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin-bottom:10px; }
+
+    /* ── Node grid ────────────────────────────────────────────── */
+    .node-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; }
+    .node-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px; position:relative; }
+    .node-name { font-weight:700; font-size:.9rem; }
+    .node-state { font-size:.88rem; font-weight:700; padding:5px 14px; border-radius:5px; display:inline-block; margin-top:4px; letter-spacing:.03em; }
+    .node-meta  { font-size:.7rem; color:var(--muted); margin-top:6px; line-height:1.6; }
+    .node-online { border-left:3px solid #22c55e; }
+    .node-offline { border-left:3px solid #64748b; opacity:.6; }
+
+    /* state colours */
+    .s-IDLE             { background:#14532d; color:#86efac; }
+    .s-RUNNING          { background:#1e3a5f; color:#93c5fd; }
+    .s-CALIBRATING      { background:#451a03; color:#fcd34d; }
+    .s-CONFIGUREVALIDATE,
+    .s-CONFIGUREPENDING { background:#431407; color:#fb923c; }
+    .s-TESTINGSENSOR,
+    .s-TESTINGACTUATOR  { background:#3b0764; color:#d8b4fe; }
+    .s-POSTPROC,
+    .s-DONE             { background:#042f2e; color:#5eead4; }
+    .s-ERROR            { background:#450a0a; color:#fca5a5; }
+    .s-UPDATING         { background:#431407; color:#fb923c; }
+    .s-BOOT,
+    .s-UNKNOWN          { background:#1e293b; color:#94a3b8; }
+    .s-OFFLINE          { background:#1e293b; color:#64748b; }
+
+    /* ── Forms & inputs ───────────────────────────────────────── */
+    label { display:block; font-size:.75rem; color:var(--muted); margin-bottom:4px; }
+    input, select, textarea {
+      width:100%; background:var(--bg); border:1px solid var(--border);
+      color:var(--text); padding:6px 10px; border-radius:4px; font-family:inherit; font-size:.85rem;
+    }
+    input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); }
+    textarea { resize:vertical; }
+    .form-row { margin-bottom:10px; }
+
+    button.btn {
+      cursor:pointer; border:none; border-radius:4px; padding:6px 16px;
+      font-family:inherit; font-size:.82rem; font-weight:600; transition:.15s;
+    }
+    button.btn-primary   { background:var(--accent); color:#0f172a; }
+    button.btn-secondary { background:var(--border); color:var(--text); }
+    button.btn-danger    { background:#7f1d1d; color:#fca5a5; }
+    button.btn:hover     { filter:brightness(1.15); }
+    button.btn:disabled  { opacity:.4; cursor:not-allowed; }
+
+    /* ── Command buttons row ─────────────────────────────────── */
+    .cmd-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+
+    /* ── Log feed ─────────────────────────────────────────────── */
+    #log-feed { height:60vh; overflow-y:auto; background:var(--bg); border:1px solid var(--border);
+                border-radius:6px; padding:10px; font-size:.78rem; line-height:1.7; }
+    .log-line { white-space:pre-wrap; word-break:break-all; }
+    .log-ERROR { color:#fca5a5; }
+    .log-WARN  { color:#fcd34d; }
+    .log-INFO  { color:var(--text); }
+    .log-DEBUG { color:var(--muted); }
+
+    /* ── JSON editor ──────────────────────────────────────────── */
+    #json-editor { min-height:340px; font-size:.78rem; }
+
+    /* ── Misc ─────────────────────────────────────────────────── */
+    .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    @media(max-width:640px){ .grid-2{ grid-template-columns:1fr; } }
+    .mt { margin-top:12px; }
+    .flash { font-size:.75rem; color:#86efac; min-height:1.2em; }
+    .flash.err { color:#fca5a5; }
+    .section-title { font-size:.75rem; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:16px 0 8px; }
+
+    /* ── Control tab layout ───────────────────────────────────── */
+    .control-grid { display:grid; grid-template-columns:minmax(200px,1fr) 3fr; gap:12px; margin-bottom:12px; }
+    @media(max-width:768px){ .control-grid{ grid-template-columns:1fr; } }
+
+    /* ── Calibration terminal ─────────────────────────────────── */
+    #calib-terminal { height:265px; overflow-y:auto; background:var(--bg); border:1px solid var(--border);
+                      border-radius:6px; padding:10px; font-size:.78rem; line-height:1.85;
+                      white-space:pre-wrap; word-break:break-all; }
+    .calib-info  { color:#67e8f9; }
+    .calib-user  { color:var(--text); font-style:italic; }
+    .calib-warn  { color:#fcd34d; }
+    .calib-ok    { color:#86efac; }
+    .calib-error { color:#fca5a5; }
+
+    /* ── Experiment tab ───────────────────────────────────────── */
+    .exp-layout { display:grid; grid-template-columns:1fr 2fr; gap:12px; }
+    @media(max-width:640px){ .exp-layout{ grid-template-columns:1fr; } }
+    .exp-desc { font-size:.82rem; color:var(--muted); line-height:1.6; margin-bottom:14px; padding:10px; background:var(--bg); border-radius:6px; border:1px solid var(--border); }
+    .exp-field-hint { font-size:.7rem; color:var(--muted); margin-top:3px; }
+    .exp-state-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+    .exp-debug-wrap { margin-top:14px; display:flex; gap:10px; }
+    .exp-debug-panel { flex:1; min-width:0; }
+    .exp-debug-header { font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:4px; display:flex; align-items:center; justify-content:space-between; }
+    .exp-debug-terminal { height:180px; overflow-y:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:.75rem; line-height:1.7; white-space:pre-wrap; word-break:break-all; }
+    /* ── Data tab ─────────────────────────────────────────────── */
+    .data-table { width:100%; border-collapse:collapse; font-size:.82rem; margin-top:10px; }
+    .data-table th { text-align:left; color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; padding:6px 10px; border-bottom:1px solid var(--border); }
+    .data-table td { padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+    .data-table tr:last-child td { border-bottom:none; }
+    .data-table tr:hover td { background:rgba(255,255,255,.03); }
+  </style>
+</head>
+
+<body x-data="app()" x-init="init()">
+
+  <!-- ── Header ──────────────────────────────────────────────── -->
+  <header>
+    <h1>&#9875; Tow Tank Control</h1>
+    <span class="conn-badge"
+          :style="mqttConnected
+            ? 'background:#14532d;color:#86efac'
+            : 'background:#450a0a;color:#fca5a5'">
+      <span x-text="mqttConnected ? '● MQTT connected' : '○ MQTT disconnected'"></span>
+    </span>
+  </header>
+
+  <!-- ── Tab nav ─────────────────────────────────────────────── -->
+  <nav>
+    <template x-for="t in tabs" :key="t">
+      <button :class="{active: activeTab===t}" @click="activeTab=t" x-text="t"></button>
+    </template>
+  </nav>
+
+  <!-- ── Experiment progress bar ──────────────────────────────── -->
+  <div x-show="expProgressActive" x-cloak
+       style="height:5px;background:var(--border);overflow:hidden">
+    <div :style="`width:${expProgress}%;background:var(--accent);height:100%;transition:width .08s linear`"></div>
+  </div>
+
+  <main>
+
+    <!-- ════════════════ SYSTEM TAB ═════════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='System'}">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <span class="section-title" style="margin:0">Discovered nodes</span>
+        <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem" @click="pollNodes()">Refresh</button>
+        <span style="font-size:.7rem;color:var(--muted)" x-text="'Last updated: '+lastPoll"></span>
+      </div>
+
+      <div x-show="Object.keys(nodes).length===0" style="color:var(--muted);font-size:.85rem">
+        No nodes discovered yet. Waiting for MQTT status messages…
+      </div>
+
+      <div class="node-grid">
+        <template x-for="[id, node] in Object.entries(nodes)" :key="id">
+          <div class="node-card" :class="node.online ? 'node-online' : 'node-offline'">
+            <div class="node-name" x-text="id"></div>
+            <div class="node-state" :class="'s-'+(node.online ? (node.state||'UNKNOWN') : 'OFFLINE')"
+                 x-text="node.online ? (node.state||'—') : 'OFFLINE'"></div>
+            <div class="node-meta">
+              <div x-text="'IP: '+(node.ip||'—')"></div>
+              <div x-text="'Last seen: '+(node.lastSeen||'—')"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ════════════════ CONTROL TAB ════════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='Control'}">
+
+      <!-- Top row: node commands (left) + live data plot (right) -->
+      <div class="control-grid">
+
+        <!-- Left: node selector + capability-based commands -->
+        <div class="card">
+          <div class="card-title">Node control</div>
+
+          <div class="form-row">
+            <label>Target node</label>
+            <select x-model="cmdTarget" @change="onNodeChange()">
+              <option value="">— select a node —</option>
+              <template x-for="[id, node] in Object.entries(nodes).filter(([,n]) => n.online)" :key="id">
+                <option :value="id" x-text="id"></option>
+              </template>
+            </select>
+          </div>
+
+          <div x-show="!cmdTarget" style="color:var(--muted);font-size:.82rem;margin-top:8px">
+            <span x-show="Object.values(nodes).some(n => !n.online)" style="color:#fcd34d">
+              Some nodes are offline — only online nodes are shown.
+            </span>
+            <span x-show="!Object.values(nodes).some(n => !n.online)">
+              Select a node to see available commands.
+            </span>
+          </div>
+
+          <div x-show="cmdTarget">
+            <div class="section-title">Commands</div>
+            <div class="cmd-list">
+              <template x-for="item in getNodeCommands()" :key="item.label">
+                <button class="btn"
+                        :class="cmdButtonClass(item.label)"
+                        :disabled="!cmdTarget || (item.action === 'calibrate' && calibWizard.active)"
+                        @click="item.action === 'calibrate' ? startCalibration(cmdTarget) : item.action === 'testSensor' ? startTestSensor(cmdTarget) : item.action === 'testActuator' ? startTestActuator(cmdTarget) : sendCmd(cmdTarget, item.payload)"
+                        x-text="item.label"></button>
+              </template>
+            </div>
+          </div>
+
+          <!-- TestSensor probe selector -->
+          <div x-show="testSensorActive && cmdTarget"
+               style="margin-top:10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:.8rem">
+            <div style="margin-bottom:6px;color:var(--muted)">Active probes (comma-separated, 1–8):</div>
+            <input type="text" x-model="testSensorProbeInput"
+                   @keydown.enter="submitTestSensor()"
+                   placeholder="e.g. 1,3,5"
+                   style="width:100%;box-sizing:border-box;padding:4px 8px;font-size:.8rem" />
+            <div x-show="testSensorWarning()" x-text="testSensorWarning()"
+                 style="color:#fcd34d;font-size:.75rem;margin-top:4px"></div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="btn btn-primary" style="flex:1" @click="submitTestSensor()">Start TestSensor</button>
+              <button class="btn btn-secondary" @click="testSensorActive=false">Cancel</button>
+            </div>
+          </div>
+
+          <!-- TestActuator — config form -->
+          <div x-show="testActuatorActive && !testActuatorPending && cmdTarget"
+               style="margin-top:10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:.8rem">
+            <div style="margin-bottom:8px;font-weight:600;color:var(--fg)">Configure Actuator Test</div>
+
+            <div class="form-row" style="margin-bottom:6px">
+              <label style="font-size:.78rem">Signal type</label>
+              <select x-model="testActuatorSignalType"
+                      @change="onTestActuatorSignalTypeChange()"
+                      style="font-size:.78rem;padding:3px 6px">
+                <template x-for="st in getTestActuatorSignalTypes()" :key="st.id">
+                  <option :value="st.id" x-text="st.label"></option>
+                </template>
+              </select>
+            </div>
+
+            <template x-for="field in getTestActuatorFields()" :key="field.key">
+              <div style="margin-bottom:5px">
+                <div style="color:var(--muted);margin-bottom:2px;font-size:.76rem"
+                     x-text="field.label + (field.unit ? ' (' + field.unit + ')' : '') + (field.required ? ' *' : '')"></div>
+                <input :type="field.type === 'int_array' ? 'text' : 'number'"
+                       :placeholder="field.placeholder || (field.default !== undefined ? String(field.default) : '')"
+                       :step="field.type === 'int' ? '1' : 'any'"
+                       :min="field.min !== undefined ? field.min : undefined"
+                       x-model="testActuatorFormValues[field.key]"
+                       style="width:100%;box-sizing:border-box;padding:4px 8px;font-size:.78rem" />
+              </div>
+            </template>
+
+            <div x-show="testActuatorFormError" x-text="testActuatorFormError"
+                 style="color:#f87171;font-size:.75rem;margin-top:4px"></div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="btn btn-primary" style="flex:1"
+                      :disabled="testActuatorAwaiting"
+                      @click="submitTestActuator()"
+                      x-text="testActuatorAwaiting ? 'Sending\u2026' : 'Configure &amp; Preview'"></button>
+              <button class="btn btn-secondary" @click="cancelTestActuator()">Cancel</button>
+            </div>
+          </div>
+
+          <!-- TestActuator — CONFIGUREPENDING confirm panel -->
+          <div x-show="testActuatorPending && cmdTarget"
+               style="margin-top:10px;padding:10px;background:#1a1f2e;border:1px solid #3b4a6b;border-radius:6px;font-size:.8rem">
+            <div style="color:#93c5fd;font-weight:600;margin-bottom:6px">&#9881; Signal computed — awaiting confirmation</div>
+            <div style="color:var(--muted);font-size:.76rem;margin-bottom:8px">
+              Review the preview plot before running the actuator.
+            </div>
+            <button class="btn btn-secondary" style="width:100%;margin-bottom:6px;font-size:.78rem"
+                    @click="openActuatorPreview()">Open Signal Preview</button>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-primary" style="flex:1;font-size:.78rem"
+                      @click="confirmActuatorTest()">Run Actuator Test</button>
+              <button class="btn btn-danger" style="flex:1;font-size:.78rem"
+                      @click="cancelActuatorTest()">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Calibration in-progress banner -->
+          <div x-show="calibWizard.active && calibWizard.nodeId === cmdTarget"
+               style="margin-top:12px;padding:8px 10px;background:#1c2c1c;border:1px solid #166534;
+                      border-radius:6px;font-size:.75rem">
+            <div style="color:#86efac;margin-bottom:6px">&#9881; Calibration in progress…</div>
+            <button class="btn btn-danger" style="width:100%;font-size:.78rem"
+                    @click="stopCalibration()">Cancel Calibration</button>
+          </div>
+
+          <div class="flash mt" :class="{err: cmdFlash.startsWith('Error')}" x-text="cmdFlash"></div>
+        </div>
+
+        <!-- Right: live data plot OR calibration terminal -->
+        <div class="card">
+
+          <!-- Chart panel (hidden during calibration) -->
+          <div x-show="!calibWizard.active">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+              <span x-text="cmdTarget ? cmdTarget + ' · live data' : 'Live data'"></span>
+              <div style="display:flex;gap:8px;align-items:center">
+                <span style="font-size:.7rem;color:var(--muted)"
+                      x-text="plotRate > 0 ? plotRate + ' msg/s' : ''"></span>
+                <span style="font-size:.7rem;color:var(--muted);font-style:italic"
+                      x-show="plotUnits" x-text="plotUnits"></span>
+                <button class="btn btn-secondary" style="padding:2px 8px;font-size:.72rem"
+                        @click="clearPlot()">Clear</button>
+                <button class="btn" style="padding:2px 8px;font-size:.72rem"
+                        :class="plotDebug ? 'btn-primary' : 'btn-secondary'"
+                        @click="plotDebug = !plotDebug">Debug</button>
+              </div>
+            </div>
+            <div x-show="plotChannels.length > 0"
+                 style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
+              <template x-for="ch in plotChannels" :key="ch">
+                <button class="btn" style="padding:2px 8px;font-size:.72rem"
+                        :class="plotVisibleChannels[ch] !== false ? 'btn-primary' : 'btn-secondary'"
+                        @click="toggleChannel(ch)"
+                        x-text="ch"></button>
+              </template>
+            </div>
+            <!-- Debug overlay -->
+            <div x-show="plotDebug"
+                 style="font-size:.7rem;color:var(--muted);background:var(--bg);border:1px solid var(--border);
+                        border-radius:4px;padding:6px 10px;margin-bottom:8px;line-height:2">
+              <div>
+                <span x-text="'Chart: ' + (plotChartReady ? '✓' : '✗ NOT CREATED')"></span>
+                &nbsp;|&nbsp;
+                <span x-text="'Datasets: ' + plotChannels.length"></span>
+                &nbsp;|&nbsp;
+                <span x-text="'Points: ' + plotDataCount"></span>
+                &nbsp;|&nbsp;
+                <span x-text="'Total msgs: ' + plotMsgTotal"></span>
+                &nbsp;|&nbsp;
+                <span x-text="'initPending: ' + _initPending"></span>
+                &nbsp;|&nbsp;
+                <span style="color:#fcd34d" x-text="'cmdTarget: \'' + cmdTarget + '\'""></span>
+              </div>
+              <template x-for="ch in plotChannels" :key="ch">
+                <div>
+                  <span style="color:var(--text)" x-text="ch + ': '"></span>
+                  <span x-text="plotLastValues[ch] !== undefined ? Number(plotLastValues[ch]).toExponential(4) : 'no data'"></span>
+                  <span x-text="' | visible: ' + (plotVisibleChannels[ch] !== false)"></span>
+                  <span x-text="' | hidden: ' + !plotVisibleChannels[ch]"></span>
+                </div>
+              </template>
+            </div>
+            <div style="position:relative;height:280px">
+              <canvas id="live-chart"></canvas>
+              <div x-show="plotChannels.length === 0"
+                   style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+                          color:var(--muted);font-size:.82rem;text-align:center;pointer-events:none">
+                No data yet — select a node and press TestSensor.
+              </div>
+            </div>
+          </div>
+
+          <!-- Calibration terminal (shown during calibration) -->
+          <div x-show="calibWizard.active">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+              <span x-text="'&#9881; Calibrating: ' + calibWizard.nodeId"></span>
+              <button class="btn btn-danger" style="padding:2px 8px;font-size:.72rem"
+                      @click="stopCalibration()">Cancel</button>
+            </div>
+            <div id="calib-terminal">
+              <template x-for="(line, i) in calibWizard.log" :key="i">
+                <div :class="'calib-' + line.type" x-text="line.text"></div>
+              </template>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <input id="calib-input"
+                     type="text"
+                     x-model="calibWizard.input"
+                     @keydown.enter="calibHandleInput()"
+                     @keydown.escape="stopCalibration()"
+                     placeholder="Enter value — or type 'done' to finalize…"
+                     autocomplete="off"
+                     spellcheck="false" />
+              <button class="btn btn-primary" style="flex-shrink:0;padding:6px 14px"
+                      @click="calibHandleInput()">&#8629;</button>
+            </div>
+          </div>
+
+        </div>
+
+      </div><!-- /control-grid -->
+
+      <!-- Bottom row: broadcast + raw MQTT -->
+      <div class="grid-2">
+
+        <div class="card">
+          <div class="card-title">Broadcast to all nodes</div>
+          <div class="cmd-list">
+            <template x-for="bc in [{label:'Reset',cmd:'Reset'},{label:'Shutdown',cmd:'Abort'},{label:'Update',cmd:'Update'}]" :key="bc.label">
+              <button class="btn btn-danger"
+                      @click="broadcastCmd({cmd: bc.cmd})"
+                      x-text="'⚠ '+bc.label+' ALL'"></button>
+            </template>
+          </div>
+          <div class="flash mt" :class="{err: broadcastFlash.startsWith('Error')}" x-text="broadcastFlash"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Raw MQTT publish</div>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+            <div style="flex:1;min-width:90px">
+              <label>Topic</label>
+              <input type="text" x-model="rawTopic" placeholder="nodeId/cmd" />
+            </div>
+            <div style="flex:2;min-width:160px">
+              <label>Payload (JSON)</label>
+              <input type="text" x-model="rawPayload"
+                     placeholder='{"cmd":"Calibrate","params":{"target":"force_bias"}}' />
+            </div>
+            <button class="btn btn-secondary" style="flex-shrink:0" @click="publishRaw()">Publish</button>
+          </div>
+          <div class="flash mt" :class="{err: rawFlash.startsWith('Error')}" x-text="rawFlash"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════ EXPERIMENT TAB ═════════════════════════ -->
+<!-- ════════════════ EXPERIMENT TAB ═════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='Experiment'}">
+      <div class="exp-layout">
+
+        <!-- Template browser -->
+        <div class="card">
+          <div class="card-title">Experiment templates</div>
+          <div x-show="templates.length===0" style="color:var(--muted);font-size:.82rem">
+            No templates found in config/templates/.
+          </div>
+          <template x-for="t in templates" :key="t">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <span style="flex:1;font-size:.82rem" x-text="t"></span>
+              <button class="btn btn-secondary" style="padding:2px 10px;font-size:.75rem"
+                      @click="loadTemplate(t)">Load</button>
+            </div>
+          </template>
+        </div>
+
+        <!-- Structured experiment form -->
+        <div class="card">
+          <div class="card-title" x-text="expNodeType ? 'Experiment: '+expNodeType : 'Experiment setup'"></div>
+
+          <!-- Description -->
+          <div class="exp-desc" x-show="expDescription" x-text="expDescription"></div>
+          <div class="exp-desc" x-show="!expDescription" style="color:var(--muted)">
+            Load a template from the left panel to begin.
+          </div>
+
+          <!-- Node selector + live state badge (single-node templates) -->
+          <div class="exp-state-row" x-show="expNodeType !== 'fullRun' && expNodeType !== 'multiFullRun'">
+            <div style="flex:1">
+              <label>Target node</label>
+              <select x-model="expNodeTarget">
+                <option value="">&mdash; select node &mdash;</option>
+                <template x-for="[id, node] in Object.entries(nodes).filter(([id,n]) => n.online && (!expNodeType || id === expNodeType))" :key="id">
+                  <option :value="id" x-text="id"></option>
+                </template>
+              </select>
+            </div>
+            <div x-show="expNodeTarget" style="margin-top:16px">
+              <span class="node-state" :class="'s-'+(nodes[expNodeTarget]?.state||'UNKNOWN')"
+                    x-text="nodes[expNodeTarget]?.state||'—'"></span>
+            </div>
+          </div>
+
+          <!-- Full-run: auto-selected dual-node status (no dropdown) -->
+          <div x-show="expNodeType === 'fullRun'" style="margin-bottom:10px">
+            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:4px">
+              <div>
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">carriageNode</div>
+                <span class="node-state"
+                      :class="'s-'+(nodes['carriageNode']?.online ? (nodes['carriageNode']?.state||'UNKNOWN') : 'OFFLINE')"
+                      x-text="nodes['carriageNode']?.online ? (nodes['carriageNode']?.state||'—') : 'OFFLINE'"></span>
+              </div>
+              <div>
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">waveMakerProbeNode</div>
+                <span class="node-state"
+                      :class="'s-'+(nodes['waveMakerProbeNode']?.online ? (nodes['waveMakerProbeNode']?.state||'UNKNOWN') : 'OFFLINE')"
+                      x-text="nodes['waveMakerProbeNode']?.online ? (nodes['waveMakerProbeNode']?.state||'—') : 'OFFLINE'"></span>
+              </div>
+            </div>
+            <div style="display:flex;gap:16px;margin-top:6px;font-size:.72rem">
+              <span :style="expFullCarriageReady ? 'color:#86efac' : 'color:#64748b'">
+                &#9679; carriageNode
+                <span x-text="expFullCarriageReady ? '— ready' : '— not configured'"></span>
+              </span>
+              <span :style="expFullWaveReady ? 'color:#86efac' : 'color:#64748b'">
+                &#9679; waveMakerProbeNode
+                <span x-text="expFullWaveReady ? '— ready' : '— not configured'"></span>
+              </span>
+            </div>
+          </div>
+
+          <!-- Dynamic form fields -->
+          <div x-show="expNodeType">
+            <template x-for="f in (EXP_FORMS[expNodeType]?.fields || [])" :key="f.key">
+              <div class="form-row">
+                <label>
+                  <span x-text="f.label"></span>
+                  <span x-show="f.required" style="color:#fca5a5"> *</span>
+                </label>
+                <input :type="f.type" x-model="expFields[f.key]"
+                       :placeholder="f.hint || ''" />
+                <div class="exp-field-hint" x-show="f.hint" x-text="f.hint"></div>
+              </div>
+            </template>
+          </div>
+
+          <!-- waveMakerProbeNode: probes_only — zero paddle notice -->
+          <div x-show="expNodeType === 'waveMakerProbeNode' && expSubType === 'probes_only'"
+               style="margin:10px 0;padding:8px 10px;background:#1a2535;border:1px solid #2d4a6b;border-radius:6px;font-size:.78rem;color:#93c5fd">
+            &#8505; Paddle outputs 0&nbsp;V — the wavemaker DAQ channel stays active but produces no motion.
+          </div>
+
+          <!-- fullRun: carriageNode + waveMakerProbeNode sub-panels -->
+          <div x-show="expNodeType === 'fullRun'" style="margin-top:10px">
+            <!-- carriageNode settings -->
+            <div style="margin-bottom:10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+              <div class="section-title" style="margin-bottom:8px">carriageNode settings</div>
+              <div class="form-row">
+                <label>Sample rate (Hz)</label>
+                <input type="number" x-model="expFields.sampleRate" placeholder="Default: 50 Hz" />
+                <div class="exp-field-hint">Leave blank to use hardware default (50 Hz)</div>
+              </div>
+              <label style="margin-top:8px;display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem;color:var(--text)">
+                <input type="checkbox" x-model="expFullLaserEnabled" style="width:auto" />
+                Include laser motion channels (heave / pitch / roll)
+              </label>
+              <div x-show="!expFullLaserEnabled"
+                   style="margin-top:6px;font-size:.75rem;color:#fcd34d;padding:6px 8px;background:#2d2408;border:1px solid #4a3810;border-radius:4px">
+                &#9888; Laser channels excluded — output will contain Fx, Fy, Fz, Mx, My, Mz only.
+              </div>
+            </div>
+            <!-- waveMakerProbeNode settings -->
+            <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+              <div class="section-title" style="margin-bottom:8px">waveMakerProbeNode settings</div>
+              <div class="form-row">
+                <label>Active probes <span style="color:#fca5a5"> *</span></label>
+                <input type="text" x-model="expFields.activeProbes" placeholder="e.g. 1,3,5" />
+                <div class="exp-field-hint">Comma-separated probe indices 1–8</div>
+              </div>
+              <div class="form-row" style="margin-top:6px">
+                <label>Paddle mode</label>
+                <select x-model="expFullPaddleMode" @change="onExpFullPaddleModeChange()">
+                  <option value="none">No paddle movement (probes only)</option>
+                  <option value="wave">Generate wave signal</option>
+                </select>
+              </div>
+              <div x-show="expFullPaddleMode === 'none'"
+                   style="margin-top:6px;padding:6px 10px;background:#1a2535;border:1px solid #2d4a6b;border-radius:4px;font-size:.75rem;color:#93c5fd">
+                &#8505; Paddle outputs 0&nbsp;V — wavemaker DAQ channel stays active but produces no motion.
+              </div>
+            </div>
+          </div>
+
+          <!-- ═══════════════════════════════════════════════════════
+               multiFullRun: dual-node status + full form
+               ═══════════════════════════════════════════════════════ -->
+          <div x-show="expNodeType === 'multiFullRun'" style="margin-bottom:4px"
+               x-effect="if(expNodeType==='multiFullRun' && expFields.numExperiments) expMultiNumRuns=Number(expFields.numExperiments)||expMultiNumRuns">
+
+            <!-- Node state badges -->
+            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:4px;margin-bottom:8px">
+              <div>
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">carriageNode</div>
+                <span class="node-state"
+                      :class="'s-'+(nodes['carriageNode']?.online ? (nodes['carriageNode']?.state||'UNKNOWN') : 'OFFLINE')"
+                      x-text="nodes['carriageNode']?.online ? (nodes['carriageNode']?.state||'—') : 'OFFLINE'"></span>
+              </div>
+              <div>
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">waveMakerProbeNode</div>
+                <span class="node-state"
+                      :class="'s-'+(nodes['waveMakerProbeNode']?.online ? (nodes['waveMakerProbeNode']?.state||'UNKNOWN') : 'OFFLINE')"
+                      x-text="nodes['waveMakerProbeNode']?.online ? (nodes['waveMakerProbeNode']?.state||'—') : 'OFFLINE'"></span>
+              </div>
+              <div x-show="expMultiCurrentRun > 0">
+                <div style="font-size:.72rem;color:var(--muted);margin-bottom:3px">Progress</div>
+                <span style="font-size:.85rem;color:#e2e8f0">Run
+                  <strong x-text="expMultiCurrentRun"></strong> of
+                  <strong x-text="expMultiNumRuns"></strong>
+                </span>
+              </div>
+            </div>
+            <!-- Ready dots -->
+            <div style="display:flex;gap:16px;margin-bottom:8px;font-size:.72rem">
+              <span :style="expMultiCarriageReady ? 'color:#86efac' : 'color:#64748b'">
+                &#9679; carriageNode <span x-text="expMultiCarriageReady ? '— ready' : '— not configured'"></span>
+              </span>
+              <span :style="expMultiWaveReady ? 'color:#86efac' : 'color:#64748b'">
+                &#9679; waveMakerProbeNode <span x-text="expMultiWaveReady ? '— ready' : '— not configured'"></span>
+              </span>
+            </div>
+            <!-- Settle status -->
+            <div x-show="expMultiSettleStatus"
+                 :style="expMultiSettleOK ? 'color:#86efac' : 'color:#fcd34d'"
+                 style="font-size:.78rem;margin-bottom:8px;padding:6px 10px;background:#1e2a35;border-radius:4px;border:1px solid #334155"
+                 x-text="expMultiSettleStatus"></div>
+
+            <!-- Run progress chips -->
+            <div x-show="expMultiCurrentRun > 0" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+              <template x-for="i in expMultiNumRuns" :key="i">
+                <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:12px;font-size:.73rem;border:1px solid"
+                      :style="
+                        i < expMultiCurrentRun   ? 'background:#14532d;border-color:#16a34a;color:#86efac' :
+                        i === expMultiCurrentRun ? 'background:#1e3a5f;border-color:#3b82f6;color:#93c5fd' :
+                                                   'background:#1e293b;border-color:#334155;color:#64748b'
+                      ">
+                  <span x-text="'Run ' + i"></span>
+                  <span x-show="i < expMultiCurrentRun">&#10003;</span>
+                  <span x-show="i === expMultiCurrentRun">&#9654;</span>
+                </span>
+              </template>
+            </div>
+
+            <!-- carriageNode settings card -->
+            <div style="margin-bottom:8px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+              <div class="section-title" style="margin-bottom:8px">carriageNode settings</div>
+              <div class="form-row">
+                <label>Sample rate (Hz)</label>
+                <input type="number" x-model="expMultiSampleRate" placeholder="Default: 50 Hz" />
+                <div class="exp-field-hint">Leave blank to use hardware default (50 Hz)</div>
+              </div>
+              <label style="margin-top:8px;display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem;color:var(--text)">
+                <input type="checkbox" x-model="expMultiLaserEnabled" style="width:auto" />
+                Include laser motion channels (heave / pitch / roll)
+              </label>
+              <div x-show="!expMultiLaserEnabled"
+                   style="margin-top:6px;font-size:.75rem;color:#fcd34d;padding:6px 8px;background:#2d2408;border:1px solid #4a3810;border-radius:4px">
+                &#9888; Laser channels excluded — output will contain Fx, Fy, Fz, Mx, My, Mz only.
+              </div>
+            </div>
+
+            <!-- waveMakerProbeNode settings card -->
+            <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:8px">
+              <div class="section-title" style="margin-bottom:8px">waveMakerProbeNode settings</div>
+              <div class="form-row">
+                <label>Active probes <span style="color:#fca5a5">*</span></label>
+                <input type="text" x-model="expMultiActiveProbes" placeholder="e.g. 1,2,3,4" />
+                <div class="exp-field-hint">Comma-separated probe indices 1–8</div>
+              </div>
+              <div class="form-row" style="margin-top:6px">
+                <label>Paddle mode</label>
+                <select x-model="expMultiPaddleMode" @change="onExpMultiPaddleModeChange()">
+                  <option value="none">No paddle movement (probes only)</option>
+                  <option value="wave">Generate wave signal</option>
+                </select>
+              </div>
+              <div x-show="expMultiPaddleMode === 'none'"
+                   style="margin-top:6px;padding:6px 10px;background:#1a2535;border:1px solid #2d4a6b;border-radius:4px;font-size:.75rem;color:#93c5fd">
+                &#8505; Paddle outputs 0&nbsp;V — wavemaker DAQ channel stays active but produces no motion.
+              </div>
+            </div>
+
+            <!-- Comma-list per-run fields -->
+            <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:8px">
+              <div class="section-title" style="margin-bottom:6px">Per-run parameters</div>
+              <div style="font-size:.74rem;color:var(--muted);margin-bottom:8px">
+                Enter a single value to apply to all runs, or <span x-text="expMultiNumRuns"></span> comma-separated values for per-run control.
+              </div>
+              <div class="form-row">
+                <label>Duration (s) <span style="color:#fca5a5">*</span></label>
+                <input type="text" x-model="expMultiDuration" :placeholder="'e.g. 30  or  30, 60, 60  ('+expMultiNumRuns+' values)'" />
+              </div>
+              <div x-show="expMultiPaddleMode === 'wave'">
+                <div class="form-row" style="margin-top:6px">
+                  <label>Signal type</label>
+                  <select x-model="expMultiSignalType" @change="onExpMultiSignalTypeChange()">
+                    <template x-for="st in getExpWaveSignalTypes()" :key="st.id">
+                      <option :value="st.id" x-text="st.label"></option>
+                    </template>
+                  </select>
+                </div>
+                <template x-for="field in getMultiWaveFields()" :key="field.key">
+                  <div class="form-row" style="margin-top:6px">
+                    <label x-text="field.label + (field.unit ? ' (' + field.unit + ')' : '') + (field.required ? ' *' : '')"></label>
+                    <input type="text"
+                           x-model="expMultiWaveFormValues[field.key]"
+                           :placeholder="field.default !== undefined
+                             ? ('e.g. ' + String(field.default) + '  or  ' + String(field.default) + ', ' + String(field.default) + '  (' + expMultiNumRuns + ' values)')
+                             : ('single value or ' + expMultiNumRuns + ' comma-separated values')" />
+                    <div class="exp-field-hint">Single value applies to all runs. Use <span x-text="expMultiNumRuns"></span> comma-separated values for per-run control.</div>
+                  </div>
+                </template>
+              </div>
+              <!-- Validation warning -->
+              <div x-show="expMultiValidateLists() !== null"
+                   x-text="expMultiValidateLists()"
+                   style="margin-top:8px;color:#f87171;font-size:.76rem;padding:6px 8px;background:#2d1a1a;border:1px solid #7f1d1d;border-radius:4px">
+              </div>
+            </div>
+
+            <!-- Settle check config (only when wave mode) -->
+            <div x-show="expMultiPaddleMode === 'wave'"
+                 style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:8px">
+              <div class="section-title" style="margin-bottom:8px">Settle check (between runs)</div>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.8rem;color:var(--text);margin-bottom:8px">
+                <input type="checkbox" x-model="expMultiSettleEnabled" style="width:auto" />
+                Enable between-run wave settle check
+              </label>
+              <div x-show="expMultiSettleEnabled" style="display:flex;flex-wrap:wrap;gap:10px">
+                <div class="form-row" style="flex:1;min-width:130px">
+                  <label>Collect duration (s)</label>
+                  <input type="number" x-model.number="expMultiSettleDuration" placeholder="10" min="1" max="60" />
+                </div>
+                <div class="form-row" style="flex:1;min-width:130px">
+                  <label>Threshold (m)</label>
+                  <input type="number" x-model.number="expMultiSettleThreshold" placeholder="0.005" step="0.001" min="0" />
+                </div>
+                <div class="form-row" style="flex:1;min-width:120px">
+                  <label>Max retries</label>
+                  <input type="number" x-model.number="expMultiSettleMaxRetries" placeholder="5" min="1" max="20" />
+                </div>
+              </div>
+              <div x-show="!expMultiSettleEnabled"
+                   style="font-size:.75rem;color:#fcd34d;padding:6px 8px;background:#2d2408;border:1px solid #4a3810;border-radius:4px;margin-top:4px">
+                &#9888; No settle check — runs will be configured one after another without waiting for waves to dissipate.
+              </div>
+            </div>
+
+            <!-- Preview signals panel -->
+            <div x-show="expMultiPreviewed && expMultiPreviewSignals.length > 0"
+                 style="padding:10px;background:var(--bg);border:1px solid #16a34a;border-radius:6px;margin-bottom:8px">
+              <div class="section-title" style="margin-bottom:8px;color:#86efac">&#10003; Wave signals previewed</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <template x-for="(sig, idx) in expMultiPreviewSignals" :key="idx">
+                  <button class="btn btn-secondary" style="font-size:.76rem;padding:4px 10px"
+                          :disabled="!sig.data"
+                          @click="expMultiOpenPreview(idx + 1)"
+                          x-text="'&#128065; Preview run ' + (idx + 1) + ' — ' + (sig.data ? '' : 'no data')"></button>
+                </template>
+              </div>
+            </div>
+
+            <!-- multiFullRun action buttons -->
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+              <!-- Preview All (only when wave mode, before run starts) -->
+              <button class="btn btn-secondary"
+                      x-show="expMultiPaddleMode === 'wave' && expMultiCurrentRun === 0"
+                      :disabled="!nodes['waveMakerProbeNode']?.online || expMultiValidateLists() !== null"
+                      @click="expMultiPreviewAll()">
+                &#128065; Preview All Signals
+              </button>
+              <!-- Configure run 1 (first configure) -->
+              <button class="btn btn-primary"
+                      x-show="expMultiCurrentRun === 0"
+                      :disabled="!nodes['carriageNode']?.online || !nodes['waveMakerProbeNode']?.online
+                                 || expMultiValidateLists() !== null
+                                 || (expMultiPaddleMode === 'wave' && !expMultiPreviewed)"
+                      @click="expMultiCurrentRun = 1; expMultiConfigure(1)">
+                Configure Run 1 of <span x-text="expMultiNumRuns"></span>
+              </button>
+              <!-- Run -->
+              <button class="btn btn-primary"
+                      x-show="expMultiCurrentRun > 0"
+                      :disabled="!expMultiCarriageReady || !expMultiWaveReady"
+                      @click="expMultiRun()">
+                &#9654; Run <span x-text="expMultiCurrentRun"></span> of <span x-text="expMultiNumRuns"></span>
+              </button>
+              <!-- Abort -->
+              <button class="btn btn-danger"
+                      x-show="expMultiCurrentRun > 0"
+                      :disabled="!['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes['carriageNode']?.state) && !['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes['waveMakerProbeNode']?.state) && !expMultiSettleStatus"
+                      @click="expMultiAbort()">
+                &#9632; Abort
+              </button>
+              <!-- Next run -->
+              <button class="btn btn-primary"
+                      x-show="expMultiCurrentRun > 0 && expMultiCurrentRun < expMultiNumRuns"
+                      :disabled="!expMultiCarriageData[expMultiCurrentRun-1] || !expMultiWaveData[expMultiCurrentRun-1] || !expMultiSettleOK"
+                      @click="expMultiNext()">
+                &#8594; Run <span x-text="expMultiCurrentRun + 1"></span> of <span x-text="expMultiNumRuns"></span>
+              </button>
+              <!-- Per-run data buttons (show after both done for that run) -->
+              <template x-for="i in expMultiCurrentRun" :key="'data'+i">
+                <template x-if="expMultiCarriageData[i-1] && expMultiWaveData[i-1]">
+                  <span style="display:inline-flex;gap:4px">
+                    <button class="btn btn-secondary" style="font-size:.74rem;padding:3px 8px"
+                            @click="expOpenPlotByTag('carriageNode', (expFields.name||'multi_run')+'_'+i)">
+                      &#128202; C<span x-text="i"></span>
+                    </button>
+                    <button class="btn btn-secondary" style="font-size:.74rem;padding:3px 8px"
+                            @click="expOpenPlotByTag('waveMakerProbeNode', (expFields.name||'multi_run')+'_'+i)">
+                      &#128202; W<span x-text="i"></span>
+                    </button>
+                  </span>
+                </template>
+              </template>
+              <!-- Debug toggle -->
+              <button class="btn" :class="expDebugOpen ? 'btn-danger' : 'btn-secondary'"
+                      @click="expDebugOpen = !expDebugOpen"
+                      x-text="expDebugOpen ? '&#128269; Hide debug' : '&#128269; Debug'"></button>
+            </div>
+          </div>
+          <!-- end multiFullRun panel -->
+
+          <!-- waveMakerProbeNode/fullRun: wave signal type + params -->
+          <div x-show="(expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes') || (expNodeType === 'fullRun' && expFullPaddleMode === 'wave')"
+               style="margin-top:8px">
+            <div class="section-title">Wave signal</div>
+            <div class="form-row">
+              <label style="font-size:.78rem">Signal type</label>
+              <select x-model="expWaveSignalType" @change="onExpWaveSignalTypeChange()" style="font-size:.78rem;padding:3px 6px">
+                <template x-for="st in getExpWaveSignalTypes()" :key="st.id">
+                  <option :value="st.id" x-text="st.label"></option>
+                </template>
+              </select>
+            </div>
+            <template x-for="field in getExpWaveFields()" :key="field.key">
+              <div style="margin-bottom:5px">
+                <div style="color:var(--muted);margin-bottom:2px;font-size:.76rem"
+                     x-text="field.label + (field.unit ? ' (' + field.unit + ')' : '') + (field.required ? ' *' : '')"></div>
+                <input type="number"
+                       :placeholder="field.default !== undefined ? String(field.default) : ''"
+                       :step="field.type === 'int' ? '1' : 'any'"
+                       :min="field.min !== undefined ? field.min : ''"
+                       x-model="expWaveFormValues[field.key]"
+                       style="padding:4px 8px;font-size:.78rem" />
+              </div>
+            </template>
+            <div x-show="expWaveFormError" x-text="expWaveFormError"
+                 style="color:#f87171;font-size:.75rem;margin-top:4px"></div>
+          </div>
+
+          <!-- Action buttons (single-node and fullRun only — multiFullRun has its own buttons above) -->
+          <div x-show="expNodeType !== 'multiFullRun'" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+            <button class="btn btn-primary"
+                    :disabled="expNodeType === 'fullRun'
+                               ? (!nodes['carriageNode']?.online || !nodes['waveMakerProbeNode']?.online)
+                               : (!expNodeTarget || !expNodeType)"
+                    @click="expNodeType === 'fullRun' ? expFullConfigure() : expConfigure()">
+              Configure
+            </button>
+            <button class="btn btn-secondary"
+                    x-show="(expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes') || (expNodeType === 'fullRun' && expFullPaddleMode === 'wave')"
+                    :disabled="expNodeType === 'fullRun' ? !expFullWaveReady : nodes[expNodeTarget]?.state !== 'CONFIGUREPENDING'"
+                    @click="expPreviewSignal(expNodeType === 'fullRun' ? 'waveMakerProbeNode' : null)">
+              &#128065; Preview Signal
+            </button>
+            <button class="btn btn-primary"
+                    :disabled="expNodeType === 'fullRun'
+                               ? (!expFullCarriageReady || !expFullWaveReady || (expFullPaddleMode === 'wave' && !expFullPreviewSeen))
+                               : (nodes[expNodeTarget]?.state !== 'CONFIGUREPENDING' ||
+                                  (expNodeType === 'waveMakerProbeNode' && expSubType === 'wave_and_probes' && !expPreviewSeen))"
+                    @click="expNodeType === 'fullRun' ? expFullRun() : (playTrainWhistle(), sendCmd(expNodeTarget, {cmd:'RunValid'}), expDataAvailable=false)">
+              &#9654; Run
+            </button>
+            <button class="btn btn-danger"
+                    :disabled="expNodeType === 'fullRun'
+                               ? (!['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes['carriageNode']?.state) && !['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes['waveMakerProbeNode']?.state))
+                               : !['RUNNING','POSTPROC','CONFIGUREPENDING'].includes(nodes[expNodeTarget]?.state)"
+                    @click="expNodeType === 'fullRun' ? expFullAbort() : sendCmd(expNodeTarget, {cmd:'Abort'})">
+              &#9632; Abort
+            </button>
+            <!-- Single-node: View Plot / Download -->
+            <button class="btn btn-secondary"
+                    x-show="expNodeType !== 'fullRun'"
+                    :disabled="!expDataAvailable"
+                    @click="expOpenPlot()">
+              &#128202; View Plot
+            </button>
+            <button class="btn btn-secondary"
+                    x-show="expNodeType !== 'fullRun'"
+                    :disabled="!expDataAvailable"
+                    @click="expDownload()">
+              &#8595; Download
+            </button>
+            <!-- Full-run: per-node View Plot / Download -->
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'fullRun'"
+                    :disabled="!expFullCarriageData"
+                    @click="expOpenPlot('carriageNode')">
+              &#128202; Carriage Plot
+            </button>
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'fullRun'"
+                    :disabled="!expFullCarriageData"
+                    @click="expDownload('carriageNode')">
+              &#8595; Carriage CSV
+            </button>
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'fullRun'"
+                    :disabled="!expFullWaveData"
+                    @click="expOpenPlot('waveMakerProbeNode')">
+              &#128202; Wave Plot
+            </button>
+            <button class="btn btn-secondary"
+                    x-show="expNodeType === 'fullRun'"
+                    :disabled="!expFullWaveData"
+                    @click="expDownload('waveMakerProbeNode')">
+              &#8595; Wave CSV
+            </button>
+            <button class="btn" :class="expDebugOpen ? 'btn-danger' : 'btn-secondary'"
+                    x-show="expNodeTarget || expNodeType === 'fullRun'"
+                    @click="expDebugOpen = !expDebugOpen"
+                    x-text="expDebugOpen ? '&#128269; Hide debug' : '&#128269; Debug'"></button>
+          </div>
+
+          <div class="flash mt" :class="{err: expFlash.startsWith('Error')}" x-text="expFlash"></div>
+        </div>
+
+      </div>
+
+      <!-- Debug terminals — appear below both cards -->
+      <div class="exp-debug-wrap" x-show="expDebugOpen && (expNodeTarget || expNodeType === 'fullRun' || expNodeType === 'multiFullRun')">
+        <template x-for="nodeId in ((expNodeType === 'fullRun' || expNodeType === 'multiFullRun') ? ['carriageNode', 'waveMakerProbeNode'] : [expNodeTarget].filter(Boolean))" :key="nodeId">
+          <div class="exp-debug-panel">
+            <div class="exp-debug-header">
+              <span x-text="'Debug: '+nodeId"></span>
+              <button class="btn btn-secondary" style="padding:1px 8px;font-size:.7rem"
+                      @click="expDebugLogs[nodeId]=[]; expDebugLogs={...expDebugLogs}">Clear</button>
+            </div>
+            <div class="exp-debug-terminal" :id="'dbg-'+nodeId"
+                 x-effect="$el.scrollTop = $el.scrollHeight">
+              <template x-for="(line, i) in (expDebugLogs[nodeId] || [])" :key="i">
+                <div :class="'log-'+line.level" x-text="line.text"></div>
+              </template>
+              <div x-show="!(expDebugLogs[nodeId]||[]).length" style="color:var(--muted)">No log messages yet for <span x-text="nodeId"></span>.</div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ════════════════ DATA TAB ═══════════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='Data'}">
+      <div class="card" style="max-width:900px">
+        <div class="card-title">Session data browser &mdash; runs stored this session</div>
+
+        <!-- Node selector row -->
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+          <div style="flex:1;min-width:160px">
+            <label>Node</label>
+            <select x-model="dataNodeId" @change="dataFetchRuns()">
+              <option value="">&mdash; select node &mdash;</option>
+              <template x-for="n in dataNodeList" :key="n">
+                <option :value="n" x-text="n"></option>
+              </template>
+            </select>
+          </div>
+          <button class="btn btn-secondary" @click="dataFetchNodes()">&#8635; Refresh</button>
+        </div>
+
+        <!-- Run table -->
+        <div x-show="dataRuns.length">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <span style="font-size:.75rem;color:var(--muted)">Download format:</span>
+            <select x-model="dataFmt" class="fmt" style="padding:3px 8px;font-size:.78rem">
+              <option value="csv">CSV</option>
+              <option value="mat">MAT</option>
+            </select>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Run name (tag)</th>
+                <th>Format</th>
+                <th>Modified</th>
+                <th>Size</th>
+                <th style="text-align:right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="run in dataRuns" :key="run.fileTag || run.tag">
+                <tr>
+                  <td x-text="run.tag"></td>
+                  <td><span style="font-size:.7rem;color:var(--muted)" x-text="run.ext.toUpperCase()"></span></td>
+                  <td style="color:var(--muted);font-size:.78rem" x-text="run.modified"></td>
+                  <td style="color:var(--muted);font-size:.78rem" x-text="run.size_kb + ' KB'"></td>
+                  <td style="text-align:right">
+                    <div style="display:flex;gap:6px;justify-content:flex-end">
+                      <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem"
+                              @click="dataOpenPlot(run.fileTag || run.tag, run.tag)">&#128202; Plot</button>
+                      <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem"
+                              @click="dataDownload(run.fileTag || run.tag, run.tag)">&#8595; Download</button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div x-show="!dataRuns.length && dataNodeId" style="color:var(--muted);font-size:.82rem;margin-top:6px">
+          No runs stored for <span x-text="dataNodeId"></span> this session.
+        </div>
+        <div x-show="!dataNodeId" style="color:var(--muted);font-size:.82rem;margin-top:6px">
+          Select a node above to see available runs.
+        </div>
+
+        <div class="flash mt" :class="{err: dataFlash.startsWith('Error')}" x-text="dataFlash"></div>
+
+        <!-- Danger zone: clear all stored data -->
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #450a0a">
+          <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#fca5a5;margin-bottom:8px">Danger zone</div>
+          <div x-show="!dataClearActive" style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-danger" style="padding:4px 14px;font-size:.8rem"
+                    @click="dataClearActive=true">&#128465; Clear all stored data</button>
+            <span style="font-size:.75rem;color:var(--muted)">Permanently removes all files on this REST server</span>
+          </div>
+          <div x-show="dataClearActive" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="text" x-model="dataClearConfirm" placeholder="CLEAR"
+                   style="width:100px"
+                   @keyup.escape="dataClearActive=false;dataClearConfirm=''"
+                   @keyup.enter="dataClearExecute()" />
+            <button class="btn btn-danger" style="padding:4px 14px;font-size:.8rem"
+                    @click="dataClearExecute()">Confirm</button>
+            <button class="btn btn-secondary" style="padding:4px 14px;font-size:.8rem"
+                    @click="dataClearActive=false;dataClearConfirm=''">Cancel</button>
+          </div>
+          <div x-show="dataClearStatus" style="font-size:.78rem;margin-top:6px"
+               :style="dataClearStatus.startsWith('Error') ? 'color:#fca5a5' : 'color:#86efac'"
+               x-text="dataClearStatus"></div>
+        </div>
+      </div>
+
+      <!-- Fetch by name — direct lookup for any node/run (including past sessions) -->
+      <div class="card" style="max-width:900px;margin-top:14px">
+        <div class="card-title">Fetch run by name</div>
+        <p style="font-size:.8rem;color:var(--muted);margin-bottom:10px">
+          Retrieve a specific run directly by node ID and experiment name — useful for runs not shown in the session browser above.
+        </p>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+          <div style="flex:1;min-width:140px">
+            <label>Node ID</label>
+            <input type="text" x-model="dataSearchNode" placeholder="e.g. carriageNode"
+                   @keyup.enter="dataSearch()" />
+          </div>
+          <div style="flex:2;min-width:180px">
+            <label>Experiment name (tag)</label>
+            <input type="text" x-model="dataSearchTag" placeholder="e.g. force_run_001"
+                   @keyup.enter="dataSearch()" />
+          </div>
+          <button class="btn btn-primary" @click="dataSearch()">Get</button>
+        </div>
+
+        <div x-show="dataSearchStatus"
+             style="font-size:.82rem;margin-bottom:8px"
+             :style="dataSearchStatus.startsWith('Error') ? 'color:#fca5a5' : 'color:#86efac'"
+             x-text="dataSearchStatus"></div>
+
+        <div x-show="dataSearchResult" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-secondary" style="padding:4px 14px;font-size:.8rem"
+                  @click="dataSearchPlot()">&#128202; Plot</button>
+          <label style="margin:0;font-size:.78rem;color:var(--muted)">Format:</label>
+          <select x-model="dataSearchFmt" class="fmt" style="padding:3px 8px;font-size:.78rem">
+            <option value="csv">CSV</option>
+            <option value="mat">MAT</option>
+          </select>
+          <button class="btn btn-secondary" style="padding:4px 14px;font-size:.8rem"
+                  @click="dataSearchDownload()">&#8595; Download</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ LOG TAB ════════════════════════════════ -->
+    <div class="tab" :class="{active: activeTab==='Log'}">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+        <span class="section-title" style="margin:0">Live log feed (+/log)</span>
+        <button class="btn btn-secondary" style="padding:3px 10px;font-size:.75rem"
+                @click="logLines=[]">Clear</button>
+        <label style="margin:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" x-model="logAutoScroll" style="width:auto" />
+          <span style="font-size:.75rem;color:var(--muted)">Auto-scroll</span>
+        </label>
+        <label style="margin:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" x-model="logDebug" style="width:auto" />
+          <span style="font-size:.75rem;color:var(--muted)">Show DEBUG</span>
+        </label>
+      </div>
+      <div id="log-feed">
+        <template x-for="(line, i) in visibleLogs" :key="i">
+          <div class="log-line" :class="'log-'+line.level" x-text="line.text"></div>
+        </template>
+      </div>
+    </div>
+
+  </main><!-- /main -->
+
+  <script>
+  const EXP_FORMS = {
+    carriageNode: {
+      fields: [
+        { key: 'name',       label: 'Run name',            type: 'text',   required: false, hint: 'e.g. baseline_run_001' },
+        { key: 'duration',   label: 'Duration (s)',         type: 'number', required: true,  hint: 'Acquisition time in seconds' },
+        { key: 'sampleRate', label: 'Sample rate (Hz)',     type: 'number', required: false, hint: 'Default: 50 Hz (leave blank to use hardware default)' },
+      ]
+    },
+    waveMakerProbeNode: {
+      fields: [
+        { key: 'name',         label: 'Run name',      type: 'text',   required: false, hint: 'e.g. wave_run_001' },
+        { key: 'duration',     label: 'Duration (s)',   type: 'number', required: true,  hint: 'Total acquisition time in seconds' },
+        { key: 'activeProbes', label: 'Active probes',  type: 'text',   required: true,  hint: 'Comma-separated probe indices 1–8, e.g. 1,3,5' },
+      ]
+    },
+    fullRun: {
+      fields: [
+        { key: 'name',     label: 'Run name',     type: 'text',   required: false, hint: 'e.g. full_run_001' },
+        { key: 'duration', label: 'Duration (s)', type: 'number', required: true,  hint: 'Acquisition time in seconds (applied to both nodes)' },
+      ]
+    },
+    multiFullRun: {
+      fields: [
+        { key: 'name',           label: 'Run name prefix',  type: 'text',   required: false, hint: 'e.g. multi_run_001 — appended with _1, _2, …' },
+        { key: 'numExperiments', label: 'Number of runs',   type: 'number', required: true,  hint: 'Total experiments in this sequence (2–10)' },
+      ]
+    }
+  };
+
+  function app() {
+    let _chart = null;   // kept outside Alpine reactive state — prevents proxy interference
+    return {
+      // ── Tab state ──────────────────────────────────────────────
+      tabs: ['System', 'Control', 'Experiment', 'Data', 'Log'],
+      activeTab: 'System',
+
+      // ── MQTT ───────────────────────────────────────────────────
+      mqttClient: null,
+      mqttConnected: false,
+
+      // ── Node registry ──────────────────────────────────────────
+      nodes: {},          // { nodeId: {state, ip, lastSeen, online} }
+      lastPoll: '—',
+
+      // ── Control tab ────────────────────────────────────────────
+      cmdTarget: '',
+      cmdFlash: '',
+      testSensorActive: false,
+      testSensorProbeInput: '',
+      // TestActuator wizard
+      actuatorProfiles: {},
+      testActuatorActive: false,
+      testActuatorPending: false,
+      testActuatorAwaiting: false,
+      testActuatorNodeId: '',
+      testActuatorSignalType: '',
+      testActuatorFormValues: {},
+      testActuatorFormError: '',
+      broadcastFlash: '',
+      rawTopic: '',
+      rawPayload: '',
+      rawFlash: '',
+
+      // ── Calibration wizard ─────────────────────────────────────
+      calibProfiles: {},
+      calibWizard: {
+        active:             false,
+        nodeId:             '',
+        phase:              null,
+        state:              'idle',
+        setupPromptIdx:     0,
+        pointPromptIdx:     0,
+        setupAnswers:       {},
+        currentPointData:   {},
+        pointCount:         0,
+        pointsByChannel:    {},
+        _warnedAboutPoints: false,
+        log:                [],
+        input:              '',
+      },
+
+      // ── Plot state ─────────────────────────────────────────────
+      plotChartReady:      false,
+      plotDataCount:       0,
+      plotChannels:        [],
+      plotVisibleChannels: {},
+      plotUnits:           '',
+      plotLastValues:      {},
+      plotDebug:           false,
+      plotMsgTotal:        0,
+      plotMaxPts:          200,
+      plotRate:            0,
+      _plotCount:          0,
+      _initPending:        false,
+
+      // ── Experiment tab ─────────────────────────────────────────
+      templates: [],
+      loadedName: '',
+      loadedJSON: '',
+      tplFlash: '',
+      expNodeTarget:    '',
+      expNodeType:      '',
+      expDescription:   '',
+      expFields:        {},
+      expExtraParams:   {},   // non-form fields from template (e.g. outputChannels)
+      expFlash:         '',
+      expDataAvailable: false,
+      expDebugOpen:     false,
+      expDebugLogs:     {},   // { nodeId: [{level, text}, ...] }
+      MAX_DEBUG_LINES:  100,
+      expSubType:        '',
+      expPreviewSeen:    false,
+      expWaveSignalType: 'sinusoidal',
+      expWaveFormValues: {},
+      expWaveFormError:  '',
+
+      // ── Full-run experiment (carriageNode + waveMakerProbeNode simultaneously) ──
+      expFullCarriageReady:  false,   // carriageNode is in CONFIGUREPENDING
+      expFullWaveReady:      false,   // waveMakerProbeNode is in CONFIGUREPENDING
+      expFullPreviewSeen:    false,   // wave preview has been viewed
+      expFullPaddleMode:     'none',  // 'none' = zero paddle | 'wave' = generate signal
+      expFullLaserEnabled:   true,    // include heave/pitch/roll channels from carriageNode
+      expFullCarriageData:   false,   // carriageNode run complete (DONE)
+      expFullWaveData:       false,   // waveMakerProbeNode run complete (DONE)
+
+      // ── Multi-run full (webapp-orchestrated N sequential fullRun rounds) ─────
+      expMultiNumRuns:         3,
+      expMultiCurrentRun:      0,      // 1-based; 0 = not started
+      expMultiPreviewed:       false,  // all N wave signals reviewed and confirmed
+      expMultiPreviewSignals:  [],     // [{name, tag, previewUrl}] fetched from REST
+      expMultiExperiments:     [],     // resolved per-run param objects [{carriage, wave}]
+      expMultiCarriageReady:   false,
+      expMultiWaveReady:       false,
+      expMultiCarriageData:    [],     // boolean[N]
+      expMultiWaveData:        [],     // boolean[N]
+      // Comma-list raw inputs
+      expMultiDuration:        '',
+      expMultiSampleRate:      '',
+      expMultiLaserEnabled:    true,
+      expMultiActiveProbes:    '',
+      expMultiPaddleMode:      'none',
+      expMultiSignalType:      'sinusoidal',
+      expMultiWaveFormValues:  {},
+      // Settle check config
+      expMultiSettleEnabled:   true,
+      expMultiSettleDuration:  10,     // probe collect duration in seconds
+      expMultiSettleThreshold: 0.005,
+      expMultiSettleMaxRetries: 5,
+      expMultiSettleStatus:    '',     // live status string shown in UI
+      expMultiSettleOK:        false,
+      expMultiSettleInProgress: false,
+      expMultiSettleTriggeredForRun: 0,
+      _expMultiSettleAbort:    false,  // internal flag to cancel in-flight settle
+      _expMultiSettleToken:    0,
+      _expMultiSettleIdleWaitTimer: null,
+
+      // ── Experiment progress bar ────────────────────────────────
+      expProgress:         0,     // 0-100 percent fill
+      expProgressDuration: 0,     // seconds
+      expProgressActive:   false,
+      _progressInterval:   null,
+
+      // ── Data tab ───────────────────────────────────────────────
+      dataNodeId:   '',
+      dataNodeList: [],
+      dataRuns:     [],
+      dataFmt:      'csv',    // format selector for session browser downloads
+      dataFlash:    '',
+      dataClearActive:  false,
+      dataClearConfirm: '',
+      dataClearStatus:  '',
+
+      // Data tab — search by name (non-session or direct lookup)
+      dataSearchNode:   '',
+      dataSearchTag:    '',
+      dataSearchResult: null,
+      dataSearchStatus: '',
+      dataSearchFmt:    'csv',
+
+      // ── Log tab ────────────────────────────────────────────────
+      logLines: [],       // [{level, text}]
+      logAutoScroll: true,
+      logDebug: false,
+      MAX_LOG_LINES: 500,
+
+      get visibleLogs() {
+        return this.logDebug
+          ? this.logLines
+          : this.logLines.filter(l => l.level !== 'DEBUG');
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  init
+      // ══════════════════════════════════════════════════════════
+      init() {
+        this.connectMQTT();
+        this.pollNodes();
+        this.pollTemplates();
+        // Periodic REST fallback every 10 s
+        setInterval(() => this.pollNodes(), 10_000);
+        // Track live data message rate
+        setInterval(() => { this.plotRate = this._plotCount; this._plotCount = 0; }, 1000);
+        // Re-initialise chart when calibration wizard closes (canvas was hidden during init)
+        // Re-init chart when calibration wizard closes — preserve channels so buttons stay visible
+        this.$watch('calibWizard.active', val => {
+          if (!val) this.initPlot();
+        });
+        // Refresh data node list whenever user visits Data tab
+        this.$watch('activeTab', tab => {
+          if (tab === 'Data') this.dataFetchNodes();
+        });
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  MQTT
+      // ══════════════════════════════════════════════════════════
+      connectMQTT() {
+        const url = `ws://${location.hostname}:9001/mqtt`;
+        this.mqttClient = mqtt.connect(url, {
+          clientId: 'towtank-ui-' + Math.random().toString(16).slice(2, 8),
+          reconnectPeriod: 3000,
+          connectTimeout: 8000,
+        });
+
+        this.mqttClient.on('connect', () => {
+          this.mqttConnected = true;
+          this.mqttClient.subscribe('+/status');
+          this.mqttClient.subscribe('+/log');
+          this.mqttClient.subscribe('+/data');
+          this.addLog('INFO', '[MQTT] Connected to broker');
+        });
+
+        this.mqttClient.on('reconnect', () => {
+          this.mqttConnected = false;
+          this.addLog('WARN', '[MQTT] Reconnecting…');
+        });
+
+        this.mqttClient.on('offline', () => {
+          this.mqttConnected = false;
+        });
+
+        this.mqttClient.on('error', (err) => {
+          this.addLog('ERROR', '[MQTT] ' + err.message);
+        });
+
+        this.mqttClient.on('message', (topic, payload) => {
+          this.handleMQTT(topic, payload.toString());
+        });
+      },
+
+      handleMQTT(topic, raw) {
+        const parts = topic.split('/');
+        const nodeId = parts[0];
+        const channel = parts[1];
+
+        let msg = {};
+        try { msg = JSON.parse(raw); } catch { msg = { raw }; }
+
+        if (channel === 'status') {
+          const existing = this.nodes[nodeId] || {};
+          const isHeartbeat = !!msg.clientID; // heartbeats include clientID; FSM transitions do not
+          this.nodes[nodeId] = {
+            ...existing,
+            // Only update state from FSM messages, not from heartbeats (which hardcode 'READY')
+            state:    isHeartbeat ? (existing.state || 'UNKNOWN') : (msg.state || existing.state || 'UNKNOWN'),
+            ip:       msg.ip       || existing.ip    || '—',
+            lastSeen: new Date().toLocaleTimeString(),
+            online:   true,
+          };
+          // Trigger Alpine reactivity
+          this.nodes = { ...this.nodes };
+          // Set expDataAvailable when experiment target node reaches DONE
+          if (!isHeartbeat && nodeId === this.expNodeTarget && msg.state === 'DONE') {
+            this.expDataAvailable = true;
+            this.expFlash = 'Run complete — data ready.';
+            setTimeout(() => { this.expFlash = ''; }, 6000);
+          }
+          // fullRun: track per-node CONFIGUREPENDING / DONE; warn on unexpected IDLE/ERROR
+          if (!isHeartbeat && this.expNodeType === 'fullRun') {
+            if (nodeId === 'carriageNode') {
+              if (msg.state === 'CONFIGUREPENDING') {
+                this.expFullCarriageReady = true;
+              } else if (msg.state === 'DONE') {
+                this.expFullCarriageData = true;
+                this.expFlash = 'carriageNode run complete — data ready.';
+                setTimeout(() => { this.expFlash = ''; }, 6000);
+              } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expFullCarriageReady) {
+                this.expFullCarriageReady = false;
+                this.expFlash = '⚠ carriageNode returned to IDLE — re-configure before running.';
+                setTimeout(() => { this.expFlash = ''; }, 8000);
+              }
+            }
+            if (nodeId === 'waveMakerProbeNode') {
+              if (msg.state === 'CONFIGUREPENDING') {
+                this.expFullWaveReady = true;
+              } else if (msg.state === 'DONE') {
+                this.expFullWaveData = true;
+                this.expFlash = 'waveMakerProbeNode run complete — data ready.';
+                setTimeout(() => { this.expFlash = ''; }, 6000);
+              } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expFullWaveReady) {
+                this.expFullWaveReady = false;
+                this.expFullPreviewSeen = false;
+                this.expFlash = '⚠ waveMakerProbeNode returned to IDLE — re-configure before running.';
+                setTimeout(() => { this.expFlash = ''; }, 8000);
+              }
+            }
+          }
+          // multiFullRun: track CONFIGUREPENDING and DONE per node per round
+          if (!isHeartbeat && this.expNodeType === 'multiFullRun') {
+            const k = this.expMultiCurrentRun - 1; // 0-based index of active run
+            if (nodeId === 'carriageNode') {
+              if (msg.state === 'CONFIGUREPENDING') {
+                this.expMultiCarriageReady = true;
+              } else if (msg.state === 'DONE' && k >= 0) {
+                const cd = [...this.expMultiCarriageData]; cd[k] = true; this.expMultiCarriageData = cd;
+                this.expFlash = `carriageNode run ${this.expMultiCurrentRun} complete.`;
+                setTimeout(() => { this.expFlash = ''; }, 5000);
+                this._expMultiCheckBothDone(k);
+              } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expMultiCarriageReady) {
+                this.expMultiCarriageReady = false;
+                this.expFlash = '⚠ carriageNode returned to IDLE — re-configure before running.';
+                setTimeout(() => { this.expFlash = ''; }, 8000);
+              }
+            }
+            if (nodeId === 'waveMakerProbeNode') {
+              if (!this.expMultiSettleInProgress) {
+                if (msg.state === 'CONFIGUREPENDING') {
+                  this.expMultiWaveReady = true;
+                } else if (msg.state === 'DONE' && k >= 0) {
+                  const wd = [...this.expMultiWaveData]; wd[k] = true; this.expMultiWaveData = wd;
+                  this.expFlash = `waveMakerProbeNode run ${this.expMultiCurrentRun} complete.`;
+                  setTimeout(() => { this.expFlash = ''; }, 5000);
+                  this._expMultiCheckBothDone(k);
+                } else if (['IDLE', 'ERROR'].includes(msg.state) && this.expMultiWaveReady) {
+                  this.expMultiWaveReady = false;
+                  this.expFlash = '⚠ waveMakerProbeNode returned to IDLE — re-configure before running.';
+                  setTimeout(() => { this.expFlash = ''; }, 8000);
+                }
+              }
+            }
+          }
+          // TestActuator: watch for CONFIGUREPENDING / IDLE / ERROR to drive wizard state
+          if (!isHeartbeat && this.testActuatorActive && nodeId === this.testActuatorNodeId) {
+            if (msg.state === 'CONFIGUREPENDING') {
+              this.testActuatorPending = true;
+              this.testActuatorAwaiting = false;
+            } else if (['IDLE', 'ERROR'].includes(msg.state)) {
+              if (this.testActuatorPending) {
+                // Run finished or error after confirmation
+                this.testActuatorPending = false;
+                this.testActuatorActive = false;
+                this.testActuatorAwaiting = false;
+              } else if (this.testActuatorAwaiting) {
+                // Validation failed — keep form open, show error if not already set
+                this.testActuatorAwaiting = false;
+                if (!this.testActuatorFormError) {
+                  this.testActuatorFormError = 'Configuration rejected — check the log for details.';
+                }
+              }
+            }
+          }
+        }
+
+        if (channel === 'log') {
+          const level = msg.level || 'INFO';
+          const text  = `[${nodeId}] ${msg.msg || msg.message || raw}`;
+          this.addLog(level, text);
+          // Detect run start — parse duration and kick off the header progress bar
+          const _logText = msg.msg || msg.message || '';
+          const _pm = _logText.match(/handleRun:\s*acquiring\s*([\d.]+)\s*s/i);
+          if (_pm) this.startProgress(parseFloat(_pm[1]));
+          // Detect run complete — snap progress bar to 100%
+          if (/handleRun:\s*acquisition complete/i.test(_logText)) this.finishProgress();
+          // Capture WARN from MATLAB during TestActuator CONFIGUREVALIDATE phase
+          if (this.testActuatorAwaiting && !this.testActuatorPending &&
+              nodeId === this.testActuatorNodeId &&
+              level.toUpperCase() === 'WARN' &&
+              !/invalid configuration parameters/i.test(_logText)) {
+            this.testActuatorFormError = _logText;
+          }
+          // Mirror to calibration terminal when this node is being calibrated
+          if (this.calibWizard.active && nodeId === this.calibWizard.nodeId) {
+            const tt = level.toUpperCase() === 'ERROR' ? 'error'
+                     : level.toUpperCase() === 'WARN'  ? 'warn' : 'info';
+            this.calibPrint(tt, `  [node] ${msg.msg || msg.message || raw}`);
+            if (this.calibWizard._awaitingNodeLog && /Calib point \d+/i.test(_logText)) {
+              this.calibWizard._awaitingNodeLog = false;
+              this.calibAskNextPointPrompt();
+            }
+          }
+          // Parse probe gains from node log so TestSensor UI can show calibration warnings
+          const _gainsMatch = _logText.match(/[Pp]robe gains (?:loaded|saved):\s*\[([^\]]+)\]/);
+          if (_gainsMatch) {
+            const _gains = _gainsMatch[1].split(',').map(s => parseFloat(s.trim()));
+            if (this.nodes[nodeId]) {
+              this.nodes[nodeId] = { ...this.nodes[nodeId], probeGains: _gains };
+              this.nodes = { ...this.nodes };
+            }
+          }
+          // Push to experiment debug terminal if open for this node
+          if (this.expDebugOpen) {
+            const expNodes = this.expNodeType === 'fullRun'
+              ? ['carriageNode', 'waveMakerProbeNode']
+              : [this.expNodeTarget].filter(Boolean);
+            if (expNodes.includes(nodeId)) {
+              if (!this.expDebugLogs[nodeId]) this.expDebugLogs[nodeId] = [];
+              const ts = new Date().toLocaleTimeString();
+              this.expDebugLogs[nodeId].push({ level: level.toUpperCase(), text: `${ts}  ${msg.msg || msg.message || raw}` });
+              if (this.expDebugLogs[nodeId].length > this.MAX_DEBUG_LINES)
+                this.expDebugLogs[nodeId].splice(0, this.expDebugLogs[nodeId].length - this.MAX_DEBUG_LINES);
+              this.expDebugLogs = { ...this.expDebugLogs };
+            }
+          }
+        }
+
+        if (channel === 'data') {
+          this.addDataPoint(nodeId, msg);
+        }
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  REST helpers
+      // ══════════════════════════════════════════════════════════
+      async pollNodes() {
+        try {
+          const res  = await fetch('/api/nodes');
+          const data = await res.json();
+          for (const [id, info] of Object.entries(data)) {
+            const existing = this.nodes[id] || {};
+            this.nodes[id] = {
+              ...existing,
+              // Always refresh authoritative fields from REST
+              online:      info.online,
+              hasSensor:   info.hasSensor   ?? existing.hasSensor,
+              hasActuator: info.hasActuator ?? existing.hasActuator,
+              ip:          existing.ip      || info.ip || '—',
+              // For offline nodes use the server-formatted timestamp;
+              // for online nodes the MQTT handler keeps lastSeen fresh.
+              lastSeen:    info.online
+                             ? (existing.lastSeen || info.last_seen_readable || '—')
+                             : (info.last_seen_readable || existing.lastSeen || '—'),
+              // Keep MQTT-live state; fall back to REST state for newly seen nodes
+              state:       existing.state || info.state || 'UNKNOWN',
+            };
+          }
+          this.nodes    = { ...this.nodes };
+          this.lastPoll = new Date().toLocaleTimeString();
+        } catch { /* offline */ }
+      },
+
+      async pollTemplates() {
+        try {
+          const res = await fetch('/api/templates');
+          this.templates = await res.json();
+        } catch { this.templates = []; }
+      },
+
+      async loadTemplate(name) {
+        try {
+          const res  = await fetch(`/api/templates/${encodeURIComponent(name)}`);
+          const data = await res.json();
+          this.loadedName = name;
+          this.loadedJSON = JSON.stringify(data, null, 2);
+          this.tplFlash   = `Loaded ${name}`;
+          // Populate structured experiment form if template has _nodeType
+          if (data._nodeType) {
+            this.expNodeType    = data._nodeType;
+            // Clear stale target if it doesn't match the new template's node type
+            if (this.expNodeTarget && this.expNodeTarget !== data._nodeType) {
+              this.expNodeTarget = '';
+            }
+            this.expDescription = data._description || '';
+            const fields    = EXP_FORMS[data._nodeType]?.fields || [];
+            const formKeys  = new Set(fields.map(f => f.key));
+            // Seed visible form fields from template values
+            const seeded = {};
+            fields.forEach(f => {
+              seeded[f.key] = data[f.key] !== undefined ? String(data[f.key]) : '';
+            });
+            this.expFields = seeded;
+            // Collect extra (non-meta, non-form) keys — forwarded verbatim to node params
+            // Examples: outputChannels, settleCheck, etc.
+            const extra = {};
+            for (const [k, v] of Object.entries(data)) {
+              if (!k.startsWith('_') && !formKeys.has(k)) extra[k] = v;
+            }
+            this.expExtraParams   = extra;
+            this.expDataAvailable = false;
+            // Sub-type and wave signal setup
+            this.expSubType = data._subType || '';
+            this.expWaveFormError = '';
+            if (this.expSubType === 'wave_and_probes') {
+              if (!Object.keys(this.actuatorProfiles).length) {
+                try {
+                  const r = await fetch('/api/actuator-profiles');
+                  if (r.ok) this.actuatorProfiles = await r.json();
+                } catch (_e) {}
+              }
+              this.expWaveSignalType = 'sinusoidal';
+              this._initExpWaveFormDefaults();
+            }
+            // fullRun: seed carriageNode + waveMakerProbeNode sub-panel fields
+            if (data._nodeType === 'fullRun') {
+              this.expFields.sampleRate   = String(data.carriageNode?.sampleRate || '');
+              this.expFields.activeProbes = data.waveMakerProbeNode?.activeProbes || '';
+              this.expFullLaserEnabled    = data.carriageNode?.laserEnabled !== false;
+              this.expFullPaddleMode      = data.waveMakerProbeNode?.paddleMode || 'none';
+              this.expFullCarriageReady   = false;
+              this.expFullWaveReady       = false;
+              this.expFullPreviewSeen     = false;
+              this.expFullCarriageData    = false;
+              this.expFullWaveData        = false;
+              if (this.expFullPaddleMode === 'wave') {
+                if (!Object.keys(this.actuatorProfiles).length) {
+                  try {
+                    const r = await fetch('/api/actuator-profiles');
+                    if (r.ok) this.actuatorProfiles = await r.json();
+                  } catch (_e) {}
+                }
+                this.expWaveSignalType = 'sinusoidal';
+                this._initExpWaveFormDefaults();
+              }
+            }
+            // multiFullRun: seed all expMulti* vars from template
+            if (data._nodeType === 'multiFullRun') {
+              const wn = data.waveMakerProbeNode || {};
+              const cn = data.carriageNode || {};
+              const sc = data.settleCheck || {};
+              this.expMultiNumRuns         = data.numExperiments || 3;
+              this.expFields.numExperiments = String(this.expMultiNumRuns);
+              this.expMultiDuration        = Array.isArray(data.duration) ? data.duration.join(', ') : String(data.duration || '');
+              this.expMultiSampleRate      = String(cn.sampleRate || '');
+              this.expMultiLaserEnabled    = cn.laserEnabled !== false;
+              this.expMultiActiveProbes    = wn.activeProbes || '';
+              this.expMultiPaddleMode      = wn.paddleMode || 'none';
+              this.expMultiSignalType      = wn.signalType || 'sinusoidal';
+              this.expMultiWaveFormValues  = {};
+              this.expMultiSettleEnabled   = sc.enabled !== false;
+              this.expMultiSettleDuration  = sc.collectDuration_s || 10;
+              this.expMultiSettleThreshold = sc.threshold || 0.005;
+              this.expMultiSettleMaxRetries = sc.maxRetries || 5;
+              this.expMultiCurrentRun      = 0;
+              this.expMultiPreviewed       = this.expMultiPaddleMode !== 'wave'; // wave requires preview
+              this.expMultiPreviewSignals  = [];
+              this.expMultiExperiments     = [];
+              this.expMultiCarriageReady   = false;
+              this.expMultiWaveReady       = false;
+              this.expMultiCarriageData    = [];
+              this.expMultiWaveData        = [];
+              this.expMultiSettleStatus    = '';
+              this.expMultiSettleOK        = false;
+              this.expMultiSettleInProgress = false;
+              this.expMultiSettleTriggeredForRun = 0;
+              this._expMultiSettleAbort    = false;
+              this._expMultiSettleToken     = 0;
+              if (this._expMultiSettleIdleWaitTimer) {
+                clearInterval(this._expMultiSettleIdleWaitTimer);
+                this._expMultiSettleIdleWaitTimer = null;
+              }
+              if (this.expMultiPaddleMode === 'wave') {
+                if (!Object.keys(this.actuatorProfiles).length) {
+                  try {
+                    const r = await fetch('/api/actuator-profiles');
+                    if (r.ok) this.actuatorProfiles = await r.json();
+                  } catch (_e) {}
+                }
+                this._initMultiWaveFormDefaults(wn);
+              }
+            }
+          }
+          this.activeTab = 'Experiment';
+        } catch (e) {
+          this.tplFlash = 'Error: ' + e.message;
+        }
+      },
+
+      expConfigure() {
+        if (!this.expNodeTarget || !this.expNodeType) return;
+        this.expWaveFormError = '';
+        this.expPreviewSeen = false;
+        const fields = EXP_FORMS[this.expNodeType]?.fields || [];
+        // Start with extra params (e.g. outputChannels) then overlay form fields
+        const params = { ...this.expExtraParams };
+        for (const f of fields) {
+          const val = this.expFields[f.key];
+          if (val === '' || val === undefined) continue;
+          params[f.key] = f.type === 'number' ? Number(val) : val;
+        }
+        // Parse activeProbes text → int array for waveMakerProbeNode
+        if (this.expNodeType === 'waveMakerProbeNode' && params.activeProbes) {
+          const arr = String(params.activeProbes).split(',')
+            .map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+          if (!arr.length) {
+            this.expFlash = 'Error: activeProbes must be comma-separated integers (1–8)';
+            return;
+          }
+          params.activeProbes = arr;
+        }
+        // Merge wave signal params for wave_and_probes subtype
+        if (this.expSubType === 'wave_and_probes') {
+          const err = this._mergeExpWaveParams(params);
+          if (err) { this.expFlash = 'Error: ' + err; return; }
+        }
+        this.expDataAvailable = false;
+        // Clear debug terminal for this node on new configure
+        if (this.expNodeTarget) this.expDebugLogs[this.expNodeTarget] = [];
+        this.expDebugLogs = { ...this.expDebugLogs };
+        this.sendCmd(this.expNodeTarget, { cmd: 'Run', params });
+        this.expFlash = `Configure sent to ${this.expNodeTarget} — awaiting CONFIGUREPENDING…`;
+        setTimeout(() => { this.expFlash = ''; }, 5000);
+      },
+
+      async expPreviewSignal(nodeId = null) {
+        const targetNode = nodeId || this.expNodeTarget;
+        try {
+          const name = (this.expFields?.name || 'wave_run_001').trim();
+          const previewTag = 'preview_' + name.replace(/\W/g, '_');
+          const url = `http://${location.hostname}:5000/data/${targetNode}?experimentName=${encodeURIComponent(previewTag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(targetNode, 'Preview: ' + name, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+          if (this.expNodeType === 'fullRun') {
+            this.expFullPreviewSeen = true;
+          } else {
+            this.expPreviewSeen = true;
+          }
+        } catch (e) {
+          this.expFlash = 'Error fetching preview: ' + e.message;
+          setTimeout(() => { this.expFlash = ''; }, 5000);
+        }
+      },
+
+      getExpWaveSignalTypes() {
+        const profile = this.actuatorProfiles[this.expNodeTarget] ||
+                        this.actuatorProfiles[this.expNodeType] ||
+                        this.actuatorProfiles['waveMakerProbeNode'];
+        if (!profile) return [];
+        return profile.signalTypes || [];
+      },
+
+      getExpWaveFields() {
+        const types = this.getExpWaveSignalTypes();
+        const st = types.find(s => s.id === this.expWaveSignalType);
+        // duration is set by the base experiment form — filter it out here to avoid collision
+        return st ? st.fields.filter(f => f.key !== 'duration') : [];
+      },
+
+      onExpWaveSignalTypeChange() {
+        this.expWaveFormError = '';
+        this._initExpWaveFormDefaults();
+      },
+
+      _initExpWaveFormDefaults() {
+        const fields = this.getExpWaveFields();
+        const vals = {};
+        for (const f of fields) {
+          vals[f.key] = f.default !== undefined ? String(f.default) : '';
+        }
+        this.expWaveFormValues = vals;
+      },
+
+      _mergeExpWaveParams(params) {
+        const fields = this.getExpWaveFields();
+        params.signalType = this.expWaveSignalType;
+        for (const f of fields) {
+          const raw = (this.expWaveFormValues[f.key] ?? '').trim();
+          if (f.required && !raw) return `"${f.label}" is required.`;
+          if (!raw) continue;
+          if (f.type === 'int') {
+            const v = parseInt(raw, 10);
+            if (isNaN(v) || v < (f.min ?? -Infinity))
+              return `"${f.label}" must be an integer${f.min !== undefined ? ' ≥ ' + f.min : ''}.`;
+            params[f.key] = v;
+          } else {
+            const v = parseFloat(raw);
+            if (isNaN(v) || v < (f.min ?? -Infinity))
+              return `"${f.label}" must be a number${f.min !== undefined ? ' ≥ ' + f.min : ''}.`;
+            params[f.key] = v;
+          }
+        }
+        return null;
+      },
+
+      async onExpFullPaddleModeChange() {
+        this.expWaveFormError = '';
+        if (this.expFullPaddleMode === 'wave') {
+          if (!Object.keys(this.actuatorProfiles).length) {
+            try {
+              const r = await fetch('/api/actuator-profiles');
+              if (r.ok) this.actuatorProfiles = await r.json();
+            } catch (_e) {}
+          }
+          this.expWaveSignalType = 'sinusoidal';
+          this._initExpWaveFormDefaults();
+        }
+      },
+
+      expFullConfigure() {
+        const name     = (this.expFields?.name || '').trim();
+        const duration = Number(this.expFields?.duration);
+        if (!duration || isNaN(duration) || duration <= 0) {
+          this.expFlash = 'Error: Duration is required.';
+          setTimeout(() => { this.expFlash = ''; }, 4000);
+          return;
+        }
+        // carriageNode params
+        const carriageParams = {
+          ...(name ? { name } : {}),
+          duration,
+          ...(this.expFields?.sampleRate ? { sampleRate: Number(this.expFields.sampleRate) } : {}),
+        };
+        if (!this.expFullLaserEnabled) {
+          carriageParams.outputChannels = ['nTime', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'];
+        }
+        // waveMakerProbeNode params
+        const probeRaw = String(this.expFields?.activeProbes || '').trim();
+        if (!probeRaw) {
+          this.expFlash = 'Error: Active probes are required for waveMakerProbeNode.';
+          setTimeout(() => { this.expFlash = ''; }, 4000);
+          return;
+        }
+        const activeProbes = probeRaw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n >= 1 && n <= 8);
+        if (!activeProbes.length) {
+          this.expFlash = 'Error: Enter at least one valid probe index (1–8).';
+          setTimeout(() => { this.expFlash = ''; }, 4000);
+          return;
+        }
+        const waveParams = {
+          ...(name ? { name } : {}),
+          duration,
+          activeProbes,
+        };
+        if (this.expFullPaddleMode === 'none') {
+          waveParams.signalType = 'sinusoidal';
+          waveParams.amplitude  = 0;
+          waveParams.frequency  = 0;
+        } else {
+          this.expWaveFormError = '';
+          const err = this._mergeExpWaveParams(waveParams);
+          if (err) { this.expFlash = 'Error: ' + err; return; }
+        }
+        // Reset readiness + data flags
+        this.expFullCarriageReady = false;
+        this.expFullWaveReady     = false;
+        this.expFullPreviewSeen   = false;
+        this.expFullCarriageData  = false;
+        this.expFullWaveData      = false;
+        // Clear debug terminals for both nodes
+        this.expDebugLogs['carriageNode']       = [];
+        this.expDebugLogs['waveMakerProbeNode'] = [];
+        this.expDebugLogs = { ...this.expDebugLogs };
+        // Send configure commands individually
+        this.sendCmd('carriageNode',       { cmd: 'Run', params: carriageParams });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'Run', params: waveParams });
+        this.expFlash = 'Configure sent to both nodes — awaiting CONFIGUREPENDING…';
+        setTimeout(() => { this.expFlash = ''; }, 6000);
+      },
+
+      expFullRun() {
+        this.playTrainWhistle();
+        this.expFullCarriageData = false;
+        this.expFullWaveData     = false;
+        this.sendCmd('carriageNode',       { cmd: 'RunValid' });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'RunValid' });
+      },
+
+      expFullAbort() {
+        this.sendCmd('carriageNode',       { cmd: 'Abort' });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'Abort' });
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Multi-run full — helpers, configure, run, settle
+      // ══════════════════════════════════════════════════════════
+
+      // Parse a raw comma-list string into an array of n numbers.
+      // Returns { values: [...], error: null } on success, or { values: null, error: '...' }.
+      _resolveMultiField(rawStr, n, label) {
+        const s = String(rawStr || '').trim();
+        if (!s) return { values: Array(n).fill(null), error: null };
+        const parts = s.split(',').map(p => p.trim()).filter(p => p !== '');
+        if (parts.length === 1) {
+          const v = Number(parts[0]);
+          if (isNaN(v)) return { values: null, error: `${label}: "${parts[0]}" is not a number.` };
+          return { values: Array(n).fill(v), error: null };
+        }
+        if (parts.length !== n) {
+          return { values: null, error: `${label}: expected 1 or ${n} values, got ${parts.length}.` };
+        }
+        const vals = parts.map(Number);
+        const bad = parts.findIndex((_, i) => isNaN(vals[i]));
+        if (bad !== -1) return { values: null, error: `${label}: value ${bad+1} ("${parts[bad]}") is not a number.` };
+        return { values: vals, error: null };
+      },
+
+      getMultiWaveFields() {
+        const profile = this.actuatorProfiles['waveMakerProbeNode'] || this.actuatorProfiles[this.expNodeType];
+        if (!profile?.signalTypes?.length) return [];
+        const signalType = this.expMultiSignalType || profile.signalTypes[0]?.id;
+        const st = profile.signalTypes.find(s => s.id === signalType);
+        return st ? st.fields.filter(f => f.key !== 'duration') : [];
+      },
+
+      _initMultiWaveFormDefaults(seed = null) {
+        const next = {};
+        for (const field of this.getMultiWaveFields()) {
+          const seeded = seed?.[field.key];
+          if (Array.isArray(seeded)) {
+            next[field.key] = seeded.join(', ');
+          } else if (seeded !== undefined && seeded !== null && seeded !== '') {
+            next[field.key] = String(seeded);
+          } else if (this.expMultiWaveFormValues[field.key] !== undefined) {
+            next[field.key] = this.expMultiWaveFormValues[field.key];
+          } else if (field.default !== undefined) {
+            next[field.key] = String(field.default);
+          } else {
+            next[field.key] = '';
+          }
+        }
+        this.expMultiWaveFormValues = next;
+      },
+
+      _resolveMultiWaveFieldValues(n) {
+        const resolved = {};
+        for (const field of this.getMultiWaveFields()) {
+          const raw = this.expMultiWaveFormValues[field.key] ?? '';
+          const parsed = this._resolveMultiField(raw, n, field.label);
+          if (parsed.error) return { values: null, error: parsed.error };
+          if (field.required && parsed.values.some(v => v === null)) {
+            return { values: null, error: `${field.label}: enter a value.` };
+          }
+          if (field.type === 'int') {
+            const bad = parsed.values.find(v => v !== null && !Number.isInteger(v));
+            if (bad !== undefined) {
+              return { values: null, error: `${field.label}: values must be integers.` };
+            }
+          }
+          if (field.min !== undefined) {
+            const bad = parsed.values.find(v => v !== null && v < field.min);
+            if (bad !== undefined) {
+              return { values: null, error: `${field.label}: values must be ≥ ${field.min}.` };
+            }
+          }
+          resolved[field.key] = parsed.values;
+        }
+        return { values: resolved, error: null };
+      },
+
+      // Validate all comma-list fields vs numExperiments. Returns first error string or null.
+      expMultiValidateLists() {
+        const n = Number(this.expMultiNumRuns) || 0;
+        if (n < 1) return 'Number of runs must be at least 1.';
+        const dur = this._resolveMultiField(this.expMultiDuration, n, 'Duration');
+        if (dur.error) return dur.error;
+        if (dur.values?.some(v => v !== null && v <= 0)) return 'Duration: all values must be > 0.';
+        if (this.expMultiPaddleMode === 'wave') {
+          const wave = this._resolveMultiWaveFieldValues(n);
+          if (wave.error) return wave.error;
+        }
+        return null;
+      },
+
+      // Build the resolved expMultiExperiments[] array from current form inputs.
+      // Returns null on success, error string on failure.
+      _buildMultiExperiments() {
+        const n   = Number(this.expMultiNumRuns) || 0;
+        const dur = this._resolveMultiField(this.expMultiDuration, n, 'Duration');
+        if (dur.error) return dur.error;
+        const waveFields = this.expMultiPaddleMode === 'wave'
+          ? this._resolveMultiWaveFieldValues(n)
+          : { values: {}, error: null };
+        if (waveFields.error) return waveFields.error;
+
+        const probeRaw = String(this.expMultiActiveProbes || '').trim();
+        const probeIndices = probeRaw.split(',').map(s => parseInt(s.trim(), 10)).filter(v => !isNaN(v) && v >= 1 && v <= 8);
+        if (!probeIndices.length) return 'Active probes: enter at least one valid index (1–8).';
+
+        const namePrefix = (this.expFields?.name || 'multi_run').trim();
+        const exps = [];
+        for (let i = 0; i < n; i++) {
+          const runName = `${namePrefix}_${i + 1}`;
+          const carriage = {
+            name:     runName,
+            duration: dur.values[i] ?? 30,
+            ...(this.expMultiSampleRate ? { sampleRate: Number(this.expMultiSampleRate) } : {}),
+          };
+          if (!this.expMultiLaserEnabled) {
+            carriage.outputChannels = ['nTime', 'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'];
+          }
+          const wave = {
+            name:         runName,
+            duration:     dur.values[i] ?? 30,
+            activeProbes: probeIndices,
+            signalType:   this.expMultiSignalType,
+          };
+          if (this.expMultiPaddleMode === 'wave') {
+            for (const field of this.getMultiWaveFields()) {
+              const values = waveFields.values[field.key] || [];
+              if (values[i] !== null && values[i] !== undefined && values[i] !== '') {
+                wave[field.key] = values[i];
+              }
+            }
+          } else {
+            wave.amplitude = 0;
+            wave.frequency = 0;
+          }
+          exps.push({ carriage, wave, runName });
+        }
+        this.expMultiExperiments = exps;
+        return null;
+      },
+
+      // Send a multi-experiment Run to waveMakerProbeNode for signal preview only.
+      // Node validates all N, precomputes allPaddleSignals, reaches CONFIGUREPENDING.
+      // We then fetch each preview from REST and Reset the node without running anything.
+      async expMultiPreviewAll() {
+        const n = Number(this.expMultiNumRuns) || 0;
+        const listErr = this.expMultiValidateLists();
+        if (listErr) { this.expFlash = 'Error: ' + listErr; return; }
+        const buildErr = this._buildMultiExperiments();
+        if (buildErr) { this.expFlash = 'Error: ' + buildErr; return; }
+
+        this.expMultiPreviewed      = false;
+        this.expMultiPreviewSignals = [];
+        this.expFlash = 'Sending preview request to waveMakerProbeNode…';
+
+        // Build experiments array for wave node
+        const waveExps = this.expMultiExperiments.map(e => e.wave);
+        const namePrefix = (this.expFields?.name || 'multi_run').trim();
+        await this.sendCmd('waveMakerProbeNode', {
+          cmd: 'Run', params: { name: namePrefix, experiments: waveExps }
+        });
+
+        // Poll for CONFIGUREPENDING (or failure) — max 30 s
+        const tStart = Date.now();
+        await new Promise(resolve => {
+          const iv = setInterval(() => {
+            const st = this.nodes['waveMakerProbeNode']?.state;
+            if (st === 'CONFIGUREPENDING' || st === 'ERROR' || st === 'IDLE' || (Date.now() - tStart) > 30000) {
+              clearInterval(iv); resolve();
+            }
+          }, 500);
+        });
+
+        const finalState = this.nodes['waveMakerProbeNode']?.state;
+        if (finalState !== 'CONFIGUREPENDING') {
+          this.expFlash = `⚠ Preview setup failed — node returned ${finalState}. Check node log.`;
+          return;
+        }
+
+        // Fetch all N preview signals from REST (tagged as preview_{runName})
+        this.expFlash = 'Fetching signal previews…';
+        const previews = [];
+        for (let i = 0; i < n; i++) {
+          const { runName } = this.expMultiExperiments[i];
+          // MATLAB tags: preview_ + makeValidName(tag) — underscores replace invalid chars
+          const safeTag = 'preview_' + runName.replace(/[^a-zA-Z0-9_]/g, '_');
+          try {
+            const r = await fetch(`http://${location.hostname}:5000/data/waveMakerProbeNode?experimentName=${encodeURIComponent(safeTag)}&latest=true`);
+            const d = await r.json();
+            previews.push({ runName, tag: safeTag, data: r.ok ? d : null });
+          } catch (_e) {
+            previews.push({ runName, tag: safeTag, data: null });
+          }
+        }
+        this.expMultiPreviewSignals = previews;
+
+        // Reset waveMakerProbeNode — paddle never moved
+        await this.sendCmd('waveMakerProbeNode', { cmd: 'Reset' });
+        this.expMultiPreviewed = true;
+        this.expFlash = `Preview complete (${n} signals). Review, then click Configure Run 1 of ${n}.`;
+        setTimeout(() => { this.expFlash = ''; }, 10000);
+      },
+
+      // Configure run runIndex (1-based). Sends Run to both nodes.
+      async expMultiConfigure(runIndex) {
+        const err = this._buildMultiExperiments();
+        if (err) { this.expFlash = 'Error: ' + err; return; }
+        const exp = this.expMultiExperiments[runIndex - 1];
+        if (!exp) { this.expFlash = 'Error: run index out of range.'; return; }
+
+        if (this._expMultiSettleIdleWaitTimer) {
+          clearInterval(this._expMultiSettleIdleWaitTimer);
+          this._expMultiSettleIdleWaitTimer = null;
+        }
+        this._expMultiSettleToken++;
+        this._expMultiSettleAbort    = false;
+        this.expMultiSettleInProgress = false;
+        this.expMultiSettleTriggeredForRun = 0;
+        this.expMultiCarriageReady = false;
+        this.expMultiWaveReady     = false;
+        this.expMultiSettleOK      = false;
+        this.expMultiSettleStatus  = '';
+        // Clear debug logs for this round
+        this.expDebugLogs['carriageNode']       = [];
+        this.expDebugLogs['waveMakerProbeNode'] = [];
+        this.expDebugLogs = { ...this.expDebugLogs };
+
+        await this.sendCmd('carriageNode',       { cmd: 'Run', params: exp.carriage });
+        await this.sendCmd('waveMakerProbeNode', { cmd: 'Run', params: exp.wave });
+        this.expFlash = `Configure sent for run ${runIndex} of ${this.expMultiNumRuns} — awaiting CONFIGUREPENDING…`;
+        setTimeout(() => { this.expFlash = ''; }, 8000);
+      },
+
+      expMultiRun() {
+        this.playTrainWhistle();
+        this.sendCmd('carriageNode',       { cmd: 'RunValid' });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'RunValid' });
+      },
+
+      expMultiAbort() {
+        if (this._expMultiSettleIdleWaitTimer) {
+          clearInterval(this._expMultiSettleIdleWaitTimer);
+          this._expMultiSettleIdleWaitTimer = null;
+        }
+        this._expMultiSettleToken++;
+        this._expMultiSettleAbort = true;
+        this.expMultiSettleStatus = '';
+        this.expMultiSettleOK     = false;
+        this.expMultiSettleInProgress = false;
+        this.sendCmd('carriageNode',       { cmd: 'Abort' });
+        this.sendCmd('waveMakerProbeNode', { cmd: 'Abort' });
+        this.expFlash = 'Abort sent to both nodes.';
+        setTimeout(() => { this.expFlash = ''; }, 4000);
+      },
+
+      expMultiNext() {
+        this.expMultiCurrentRun++;
+        this.expMultiSettleOK     = false;
+        this.expMultiSettleStatus = '';
+        this.expMultiSettleTriggeredForRun = 0;
+        this.expMultiConfigure(this.expMultiCurrentRun);
+      },
+
+      // Called when both nodes have reached DONE for the current round.
+      _expMultiCheckBothDone(k) {
+        const cd = this.expMultiCarriageData;
+        const wd = this.expMultiWaveData;
+        if (cd[k] && wd[k]) {
+          if (this.expMultiSettleInProgress) return;
+          // Both done — trigger settle (or skip if last round or paddleMode=none)
+          if (this.expMultiCurrentRun >= this.expMultiNumRuns) {
+            // Last round complete — no settle needed
+            this.expFlash = `All ${this.expMultiNumRuns} runs complete!`;
+          } else if (this.expMultiPaddleMode !== 'wave' || !this.expMultiSettleEnabled) {
+            this.expMultiSettleOK = true;
+          } else {
+            if (this.expMultiSettleTriggeredForRun === this.expMultiCurrentRun) return;
+            this.expMultiSettleTriggeredForRun = this.expMultiCurrentRun;
+            const token = ++this._expMultiSettleToken;
+            // Wait for both nodes to reach IDLE (POSTPROC may still be running)
+            if (this._expMultiSettleIdleWaitTimer) {
+              clearInterval(this._expMultiSettleIdleWaitTimer);
+            }
+            this._expMultiSettleIdleWaitTimer = setInterval(() => {
+              if (token !== this._expMultiSettleToken) {
+                clearInterval(this._expMultiSettleIdleWaitTimer);
+                this._expMultiSettleIdleWaitTimer = null;
+                return;
+              }
+              const cs = this.nodes['carriageNode']?.state;
+              const ws = this.nodes['waveMakerProbeNode']?.state;
+              if (cs === 'IDLE' && ws === 'IDLE') {
+                clearInterval(this._expMultiSettleIdleWaitTimer);
+                this._expMultiSettleIdleWaitTimer = null;
+                this._runSettleCollect(1, token);
+              }
+            }, 1000);
+          }
+        }
+      },
+
+      // Run a wave_probes_collect-equivalent, fetch REST data, check half-amplitude.
+      async _runSettleCollect(attempt, token = this._expMultiSettleToken) {
+        if (token !== this._expMultiSettleToken) return;
+        if (this._expMultiSettleAbort) {
+          this._expMultiSettleAbort = false;
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        this.expMultiSettleInProgress = true;
+        this.expMultiSettleOK = false;
+        const settleDuration = Number(this.expMultiSettleDuration);
+        if (!Number.isFinite(settleDuration) || settleDuration <= 0) {
+          this.expMultiSettleStatus = '⚠ Settle collect duration must be a positive number.';
+          this.expMultiSettleOK = false;
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        const maxR = Math.max(1, Number(this.expMultiSettleMaxRetries) || 1);
+        this.expMultiSettleStatus = `Checking settle… attempt ${attempt} of ${maxR}`;
+
+        const probeRaw = String(this.expMultiActiveProbes || '').trim();
+        const probeIndices = probeRaw.split(',').map(s => parseInt(s.trim(), 10)).filter(v => !isNaN(v) && v >= 1 && v <= 8);
+        const settleName = `settle_check_r${this.expMultiCurrentRun}_a${attempt}`;
+        const waveParams = {
+          name:         settleName,
+          duration:     settleDuration,
+          activeProbes: probeIndices,
+          signalType:   'sinusoidal',
+          amplitude:    0,
+          frequency:    0,
+        };
+
+        // Start settle collect on waveMakerProbeNode only
+        await this.sendCmd('waveMakerProbeNode', { cmd: 'Run', params: waveParams });
+        if (token !== this._expMultiSettleToken) {
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+
+        // Poll for CONFIGUREPENDING
+        await this._pollNodeState('waveMakerProbeNode', ['CONFIGUREPENDING', 'IDLE', 'ERROR'], 15000);
+        if (token !== this._expMultiSettleToken) {
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        if (this.nodes['waveMakerProbeNode']?.state !== 'CONFIGUREPENDING') {
+          this.expMultiSettleStatus = '⚠ Settle collect setup failed.';
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        await this.sendCmd('waveMakerProbeNode', { cmd: 'RunValid' });
+        if (token !== this._expMultiSettleToken) {
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+
+        // Poll for IDLE (POSTPROC complete, data saved)
+        await this._pollNodeState('waveMakerProbeNode', ['IDLE', 'ERROR'], (settleDuration + 15) * 1000);
+        if (token !== this._expMultiSettleToken) {
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        if (this._expMultiSettleAbort) {
+          this._expMultiSettleAbort = false;
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+
+        // Fetch the settle collect data from REST
+        let halfAmps = [];
+        try {
+          const safeTag = settleName.replace(/[^a-zA-Z0-9_]/g, '_');
+          const url = `http://${location.hostname}:5000/data/waveMakerProbeNode?experimentName=${encodeURIComponent(safeTag)}&latest=true`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          // Use last 5 s of data: sampleRate from node (default 100 Hz) or infer from nTime
+          const nTimeIdx = columns.indexOf('nTime');
+          const totalRows = rows.length;
+          const last5sRows = nTimeIdx >= 0
+            ? rows.filter(r => {
+                const t = r[nTimeIdx];
+                const tMax = rows[totalRows - 1][nTimeIdx];
+                return (tMax - t) <= 5;
+              })
+            : rows.slice(-Math.min(500, totalRows));
+          for (const pi of probeIndices) {
+            // Column names: H1, H2, … or probe_1, probe_2, …
+            const colName = columns.find(c => c === `H${pi}` || c === `h${pi}` || c === `probe_${pi}`);
+            if (!colName) continue;
+            const ci  = columns.indexOf(colName);
+            const vals = last5sRows.map(r => Number(r[ci])).filter(v => !isNaN(v));
+            if (vals.length < 2) continue;
+            halfAmps.push((Math.max(...vals) - Math.min(...vals)) / 2);
+          }
+        } catch (e) {
+          this.expMultiSettleStatus = `⚠ Settle data fetch failed: ${e.message}`;
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+
+        const thresh  = Number(this.expMultiSettleThreshold);
+        if (!Number.isFinite(thresh) || thresh < 0) {
+          this.expMultiSettleStatus = '⚠ Settle threshold must be a non-negative number.';
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        if (!halfAmps.length) {
+          this.expMultiSettleStatus = '⚠ Settle check found no matching active probe columns in returned data.';
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        const allOK   = halfAmps.length > 0 && halfAmps.every(a => a < thresh);
+        const maxAmp  = halfAmps.length ? Math.max(...halfAmps).toFixed(4) : '—';
+        this.expMultiSettleStatus = allOK
+          ? `✓ Settled (max half-amp ${maxAmp} m < ${thresh} m)`
+          : `Attempt ${attempt}/${maxR}: max ${maxAmp} m ≥ threshold ${thresh} m`;
+
+        if (allOK) {
+          this.expMultiSettleOK = true;
+          this.expMultiSettleInProgress = false;
+          return;
+        }
+        if (attempt < maxR) {
+          await this._runSettleCollect(attempt + 1, token);
+        } else {
+          this.expMultiSettleStatus = `⚠ Tank not settled after ${maxR} checks (max ${maxAmp} m). Verify manually before running next experiment.`;
+          // Still set OK so the user can manually proceed if they accept the risk
+          this.expMultiSettleOK = true;
+          this.expMultiSettleInProgress = false;
+        }
+      },
+
+      // Helper: poll a node's MQTT-updated state until it's one of targetStates or timeout elapses.
+      _pollNodeState(nodeId, targetStates, timeoutMs) {
+        return new Promise(resolve => {
+          const tStart = Date.now();
+          const iv = setInterval(() => {
+            const st = this.nodes[nodeId]?.state;
+            if (targetStates.includes(st) || (Date.now() - tStart) > timeoutMs) {
+              clearInterval(iv); resolve();
+            }
+          }, 500);
+        });
+      },
+
+      // Open preview signal plot for multi-run (uses REST-stored preview tag)
+      async expMultiOpenPreview(runIndex) {
+        const sig = this.expMultiPreviewSignals[runIndex - 1];
+        if (!sig?.data) { this.expFlash = `No preview data for run ${runIndex}.`; return; }
+        try {
+          const { columns, rows } = this._parseRestResponse(sig.data);
+          const html = this.buildPlotHtml(`waveMakerProbeNode (preview ${runIndex})`, sig.runName, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) { this.expFlash = 'Error opening preview: ' + e.message; }
+      },
+
+      async onExpMultiPaddleModeChange() {
+        this.expMultiPreviewed = this.expMultiPaddleMode !== 'wave'; // wave mode requires preview
+        if (this.expMultiPaddleMode === 'wave') {
+          if (!Object.keys(this.actuatorProfiles).length) {
+            try {
+              const r = await fetch('/api/actuator-profiles');
+              if (r.ok) this.actuatorProfiles = await r.json();
+            } catch (_e) {}
+          }
+          this._initMultiWaveFormDefaults();
+        }
+      },
+
+      onExpMultiSignalTypeChange() {
+        this.expMultiPreviewed = false;
+        this._initMultiWaveFormDefaults();
+      },
+
+      async expDownload(nodeId = null) {
+        const targetNode = nodeId || this.expNodeTarget;
+        try {
+          const url = `http://${location.hostname}:5000/data/${targetNode}?latest=true`;
+          const res  = await fetch(url);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          let content, filename, mime;
+          if (data.format === 'csv') {
+            content  = data.csv;
+            filename = `${targetNode}_latest.csv`;
+            mime     = 'text/csv';
+          } else {
+            content  = JSON.stringify(data.data, null, 2);
+            filename = `${targetNode}_latest.json`;
+            mime     = 'application/json';
+          }
+          const blob = new Blob([content], { type: mime });
+          const a    = document.createElement('a');
+          a.href     = URL.createObjectURL(blob);
+          a.download = filename;
+          a.click();
+          URL.revokeObjectURL(a.href);
+          this.expFlash = `Downloaded ${filename}`;
+          setTimeout(() => { this.expFlash = ''; }, 3000);
+        } catch (e) {
+          this.expFlash = 'Error: ' + e.message;
+        }
+      },
+
+      async expOpenPlot(nodeId = null) {
+        const targetNode = nodeId || this.expNodeTarget;
+        try {
+          const url = `http://${location.hostname}:5000/data/${targetNode}?latest=true`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const runName = this.expFields?.name || `${targetNode}_latest`;
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(targetNode, runName, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) {
+          this.expFlash = 'Error opening plot: ' + e.message;
+        }
+      },
+
+      async expOpenPlotByTag(nodeId, tag) {
+        try {
+          const safeTag = tag.replace(/[^a-zA-Z0-9_]/g, '_');
+          const url = `http://${location.hostname}:5000/data/${nodeId}?experimentName=${encodeURIComponent(safeTag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(nodeId, tag, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) {
+          this.expFlash = 'Error opening plot: ' + e.message;
+        }
+      },
+
+      _parseRestResponse(resp) {
+        let columns, rows;
+        if (resp.format === 'csv') {
+          const lines = resp.csv.trim().split('\n');
+          columns = lines[0].split(',').map(h => h.trim());
+          rows = lines.slice(1).map(l => l.split(',').map(v => { const n = Number(v); return isNaN(n) ? v.trim() : n; }));
+        } else {
+          const data = resp.data;
+          if (!data || !data.length) throw new Error('No data in response');
+          columns = Object.keys(data[0]);
+          rows = data.map(d => columns.map(c => d[c]));
+        }
+        return { columns, rows };
+      },
+
+      buildPlotHtml(nodeId, runName, columns, rows) {
+        const SKIP   = new Set(['timestamp', 'clientID', 'type', 'units']);
+        const COLORS = ['#38bdf8','#86efac','#fcd34d','#fb923c','#d8b4fe','#fca5a5','#5eead4','#f472b6'];
+        const xIdx   = columns.indexOf('nTime');
+        const plotCols = columns.filter((c, i) => !SKIP.has(c) && i !== xIdx);
+
+        const labels = xIdx >= 0
+          ? rows.map(r => typeof r[xIdx] === 'number' ? r[xIdx].toFixed(3) : String(r[xIdx]))
+          : rows.map((_, i) => i);
+
+        const datasets = plotCols.map((col, i) => {
+          const ci = columns.indexOf(col);
+          return {
+            label: col,
+            data: rows.map(r => { const v = r[ci]; return typeof v === 'number' ? v : parseFloat(v); }),
+            borderColor: COLORS[i % COLORS.length],
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.1,
+          };
+        });
+
+        const chartCfg   = JSON.stringify({ labels, datasets });
+        const csvContent = [columns.join(','), ...rows.map(r => r.map(v => String(v)).join(','))].join('\n');
+        const eName   = JSON.stringify(runName);
+        const eNode   = JSON.stringify(nodeId);
+        const eCsv    = JSON.stringify(csvContent);
+        const eXLabel = JSON.stringify(xIdx >= 0 ? 'nTime' : 'sampleIndex');
+        // Capture hostname NOW (parent page context) — blob: pages have empty location.hostname
+        const eHost   = JSON.stringify(location.hostname || 'localhost');
+        const nSamp = rows.length;
+        const nChan = plotCols.length;
+
+        return `<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8"/>
+  <title>${runName} | ${nodeId}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"><\/script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    :root{--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8}
+    body{background:var(--bg);color:var(--text);font-family:ui-monospace,monospace;font-size:14px;display:flex;flex-direction:column;height:100vh}
+    header{padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-shrink:0}
+    header h1{font-size:.95rem;letter-spacing:.04em}header .meta{font-size:.72rem;color:var(--muted)}
+    .controls{padding:8px 20px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;align-items:center;flex-shrink:0}
+    .ch-btn{cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text);padding:3px 10px;border-radius:4px;font-family:inherit;font-size:.72rem;transition:.15s}
+    .ch-btn.hidden-ch{opacity:.3}
+    .chart-wrap{flex:1;padding:16px 20px;min-height:0}
+    canvas{width:100%!important;height:100%!important}
+    footer{padding:8px 20px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-shrink:0;flex-wrap:wrap}
+    .btn{cursor:pointer;border:none;border-radius:4px;padding:6px 16px;font-family:inherit;font-size:.82rem;font-weight:600;background:#38bdf8;color:#0f172a}
+    .btn.sec{background:#334155;color:var(--text)}
+    .btn:hover{filter:brightness(1.15)}
+    select.fmt{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:inherit;font-size:.78rem;cursor:pointer}
+  </style>
+</head><body>
+  <header>
+    <div><h1>&#128202; ${runName}</h1>
+    <div class="meta">Node: ${nodeId}&nbsp;&nbsp;|&nbsp;&nbsp;${nSamp} samples&nbsp;&nbsp;|&nbsp;&nbsp;${nChan} channels</div></div>
+  </header>
+  <div class="controls" id="ch"></div>
+  <div class="chart-wrap"><canvas id="c"></canvas></div>
+  <footer>
+    <label style="color:var(--muted);font-size:.78rem">Format:</label>
+    <select id="fmt" class="fmt">
+      <option value="csv">CSV</option>
+      <option value="json">JSON</option>
+      <option value="mat">MAT (MATLAB)</option>
+    </select>
+    <button class="btn sec" onclick="dl('full')">&#8595; Download Full</button>
+    <button class="btn"     onclick="dl('seen')">&#8595; Download Seen</button>
+  </footer>
+  <script>
+    const cfg    = ${chartCfg};
+    const csv    = ${eCsv};
+    const name   = ${eName};
+    const xLabel = ${eXLabel};
+    const matUrl = 'http://' + ${eHost} + ':5000/api/convert/mat';
+    const chart  = new Chart(document.getElementById('c').getContext('2d'), {
+      type: 'line', data: cfg,
+      options: {
+        animation: false, responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 14, color: '#94a3b8', font: { family: 'ui-monospace', size: 10 } }, grid: { color: '#1e293b' } },
+          y: { ticks: { color: '#94a3b8', font: { family: 'ui-monospace', size: 10 } }, grid: { color: '#334155' } }
+        }
+      }
+    });
+    cfg.datasets.forEach((ds, i) => {
+      const b = document.createElement('button');
+      b.className = 'ch-btn'; b.textContent = ds.label;
+      b.style.borderColor = ds.borderColor; b.style.color = ds.borderColor;
+      b.addEventListener('click', () => {
+        const hidden = !chart.data.datasets[i].hidden;
+        chart.data.datasets[i].hidden = hidden;
+        b.classList.toggle('hidden-ch', hidden);
+        chart.update('none');
+      });
+      document.getElementById('ch').appendChild(b);
+    });
+    function dl(mode) {
+      const fmt = document.getElementById('fmt').value;
+      // --- Collect columns + rows for the requested mode ---
+      let hdrs, cols;
+      if (mode === 'seen') {
+        hdrs = [xLabel];
+        cols = [cfg.labels.map(Number)];
+        cfg.datasets.forEach((ds, i) => {
+          if (!chart.data.datasets[i].hidden) { hdrs.push(ds.label); cols.push(ds.data); }
+        });
+      } else {
+        // full: rebuild from embedded csv
+        const lines = csv.trim().split('\\n');
+        hdrs = lines[0].split(',');
+        const numRows = lines.slice(1).map(l => l.split(',').map(v => { const n = Number(v); return isNaN(n) ? v : n; }));
+        cols = hdrs.map((_, ci) => numRows.map(r => r[ci]));
+      }
+      const suffix = mode === 'seen' ? '_seen' : '';
+      if (fmt === 'mat') {
+        // Build row-major data array for server
+        const rowData = cols[0].map((_, ri) => hdrs.map((_, ci) => { const v = cols[ci][ri]; return typeof v === 'number' ? v : parseFloat(v) || 0; }));
+        const btn = event.target; btn.disabled = true; btn.textContent = 'Converting\u2026';
+        fetch(matUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name + suffix, columns: hdrs, data: rowData }),
+        })
+        .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.error || r.statusText); }); return r.blob(); })
+        .then(blob => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob); a.download = name + suffix + '.mat'; a.click(); URL.revokeObjectURL(a.href);
+        })
+        .catch(e => alert('MAT download failed: ' + e.message))
+        .finally(() => { btn.disabled = false; btn.textContent = mode === 'seen' ? '\u2193 Download Seen' : '\u2193 Download Full'; });
+        return;
+      }
+      let content, ext, mime;
+      if (fmt === 'json') {
+        const rowObjs = cols[0].map((_, ri) => { const o = {}; hdrs.forEach((h, ci) => { o[h] = cols[ci][ri]; }); return o; });
+        content = JSON.stringify(rowObjs, null, 2); ext = 'json'; mime = 'application/json';
+      } else {
+        const rows = cols[0].map((_, ri) => hdrs.map((_, ci) => String(cols[ci][ri])).join(','));
+        content = [hdrs.join(','), ...rows].join('\\n'); ext = 'csv'; mime = 'text/csv';
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+      a.download = name + suffix + '.' + ext; a.click(); URL.revokeObjectURL(a.href);
+    }
+  <\/script>
+</body></html>`;
+      },
+
+      // ── Data tab helpers ──────────────────────────────────────
+      async dataFetchNodes() {
+        try {
+          const res  = await fetch(`http://${location.hostname}:5000/data`);
+          const data = await res.json();
+          this.dataNodeList = data.clients || [];
+          if (this.dataNodeList.length === 1 && !this.dataNodeId)
+            this.dataNodeId = this.dataNodeList[0];
+          if (this.dataNodeId) this.dataFetchRuns();
+        } catch (e) { this.dataFlash = 'REST server unreachable: ' + e.message; }
+      },
+
+      async dataFetchRuns() {
+        if (!this.dataNodeId) return;
+        try {
+          const res  = await fetch(`http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}`);
+          const data = await res.json();
+          this.dataRuns  = data.files || [];
+          this.dataFlash = this.dataRuns.length ? '' : `No runs stored for ${this.dataNodeId} this session.`;
+        } catch (e) { this.dataFlash = 'Error: ' + e.message; }
+      },
+
+      async dataOpenPlot(fileTag, displayTag) {
+        const title = displayTag || fileTag;
+        try {
+          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}?experimentName=${encodeURIComponent(fileTag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(this.dataNodeId, title, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) { this.dataFlash = 'Error: ' + e.message; }
+      },
+
+      async dataDownload(fileTag, displayTag) {
+        const fname = displayTag || fileTag;
+        try {
+          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataNodeId)}?experimentName=${encodeURIComponent(fileTag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          if (this.dataFmt === 'mat') {
+            const { columns, rows } = this._parseRestResponse(resp);
+            const mr = await fetch(`http://${location.hostname}:5000/api/convert/mat`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: fname, columns, data: rows })
+            });
+            if (!mr.ok) { this.dataFlash = 'MAT conversion failed: ' + mr.statusText; return; }
+            const blob = await mr.blob();
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${fname}.mat`; a.click(); URL.revokeObjectURL(a.href);
+          } else {
+            let content, filename, mime;
+            if (resp.format === 'csv') {
+              content = resp.csv; filename = `${fname}.csv`; mime = 'text/csv';
+            } else {
+              content = JSON.stringify(resp.data, null, 2); filename = `${fname}.json`; mime = 'application/json';
+            }
+            const blob = new Blob([content], { type: mime });
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href);
+          }
+          this.dataFlash = `Downloaded ${fname}`;
+          setTimeout(() => { this.dataFlash = ''; }, 3000);
+        } catch (e) { this.dataFlash = 'Error: ' + e.message; }
+      },
+
+      playTrainWhistle() {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          if (ctx.state === 'suspended') ctx.resume();
+          const now = ctx.currentTime;
+          const dur = 1.5;
+          // G-major chord (392/494/587 Hz) + soft sub-fundamental for body
+          // Each tone gets a gentle LFO vibrato for an organic whistle character
+          [[392, 0.40], [494, 0.26], [587, 0.16], [196, 0.09]].forEach(([freq, pk]) => {
+            const osc     = ctx.createOscillator();
+            const env     = ctx.createGain();
+            osc.type      = 'sine';
+            osc.frequency.value = freq;
+            // Subtle vibrato: LFO starts after the attack settles
+            const lfo     = ctx.createOscillator();
+            const lfoGain = ctx.createGain();
+            lfo.frequency.value = 5;              // 5 Hz wobble
+            lfoGain.gain.value  = freq * 0.014;   // ~1.4 % pitch depth
+            lfo.connect(lfoGain);
+            lfoGain.connect(osc.frequency);
+            lfo.start(now + 0.12);
+            lfo.stop(now + dur + 0.05);
+            // Envelope: sharp attack → hold → smooth decay
+            env.gain.setValueAtTime(0, now);
+            env.gain.linearRampToValueAtTime(pk, now + 0.05);  // attack
+            env.gain.setValueAtTime(pk, now + 0.95);           // hold
+            env.gain.linearRampToValueAtTime(0, now + dur);    // decay
+            osc.connect(env);
+            env.connect(ctx.destination);
+            osc.start(now);
+            osc.stop(now + dur + 0.05);
+          });
+          setTimeout(() => ctx.close(), (dur + 0.4) * 1000);
+        } catch (_e) { /* silently ignore if Web Audio not available */ }
+      },
+
+      startProgress(sec) {
+        if (this._progressInterval) clearInterval(this._progressInterval);
+        this.expProgressDuration = sec;
+        this.expProgress         = 0;
+        this.expProgressActive   = true;
+        const tickMs = 100;
+        const ticks  = (sec * 1000) / tickMs;
+        const step   = 90 / ticks;   // fill to 90% over acquisition; finishProgress() completes it
+        this._progressInterval = setInterval(() => {
+          this.expProgress = Math.min(this.expProgress + step, 90);
+          if (this.expProgress >= 90) {
+            clearInterval(this._progressInterval);
+            this._progressInterval = null;
+            // Hold at 90% — waiting for "acquisition complete" log
+          }
+        }, tickMs);
+      },
+
+      finishProgress() {
+        if (this._progressInterval) { clearInterval(this._progressInterval); this._progressInterval = null; }
+        if (!this.expProgressActive) return;
+        this.expProgress = 100;
+        setTimeout(() => { this.expProgressActive = false; this.expProgress = 0; }, 400);
+      },
+
+      async dataClearExecute() {
+        if (this.dataClearConfirm !== 'CLEAR') { this.dataClearStatus = 'Error: type CLEAR to confirm'; return; }
+        try {
+          const res = await fetch(`http://${location.hostname}:5000/data/clear`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: 'CLEAR_ALL_DATA' })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          this.dataClearStatus = 'All data cleared.';
+          this.dataClearConfirm = ''; this.dataClearActive = false;
+          this.dataRuns = []; this.dataNodeList = []; this.dataNodeId = '';
+          setTimeout(() => { this.dataClearStatus = ''; }, 4000);
+        } catch (e) { this.dataClearStatus = 'Error: ' + e.message; }
+      },
+
+      // ── Data tab: search-by-name helpers ─────────────────────
+      async dataSearch() {
+        if (!this.dataSearchNode || !this.dataSearchTag) {
+          this.dataSearchStatus = 'Please enter both a node ID and an experiment name.';
+          return;
+        }
+        this.dataSearchResult = null;
+        this.dataSearchStatus = 'Fetching\u2026';
+        try {
+          const url  = `http://${location.hostname}:5000/data/${encodeURIComponent(this.dataSearchNode)}?experimentName=${encodeURIComponent(this.dataSearchTag)}`;
+          const res  = await fetch(url);
+          const resp = await res.json();
+          if (!res.ok) throw new Error(resp.error || res.statusText);
+          const { columns, rows } = this._parseRestResponse(resp);
+          this.dataSearchResult = { columns, rows, node: this.dataSearchNode, tag: this.dataSearchTag };
+          this.dataSearchStatus = `\u2713 Found ${rows.length} samples, ${columns.length} columns.`;
+        } catch (e) {
+          this.dataSearchStatus = 'Error: ' + e.message;
+          this.dataSearchResult = null;
+        }
+      },
+
+      dataSearchPlot() {
+        if (!this.dataSearchResult) return;
+        const { columns, rows, node, tag } = this.dataSearchResult;
+        const html = this.buildPlotHtml(node, tag, columns, rows);
+        window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+      },
+
+      async dataSearchDownload() {
+        if (!this.dataSearchResult) return;
+        const { columns, rows, node, tag } = this.dataSearchResult;
+        if (this.dataSearchFmt === 'mat') {
+          try {
+            const resp = await fetch(`http://${location.hostname}:5000/api/convert/mat`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: tag, columns, data: rows })
+            });
+            if (!resp.ok) { this.dataSearchStatus = 'MAT conversion failed: ' + resp.statusText; return; }
+            const blob = await resp.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${node}_${tag}.mat`; a.click(); URL.revokeObjectURL(a.href);
+          } catch (e) { this.dataSearchStatus = 'MAT error: ' + e.message; }
+        } else {
+          const csvLines = [columns.join(','), ...rows.map(r => r.map(v => String(v)).join(','))];
+          const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `${node}_${tag}.csv`; a.click(); URL.revokeObjectURL(a.href);
+        }
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Command dispatch
+      // ══════════════════════════════════════════════════════════
+      async sendCmd(nodeId, body) {
+        if (!nodeId) { this.cmdFlash = 'Error: no node selected'; return; }
+        try {
+          const res = await fetch(`/api/command/${encodeURIComponent(nodeId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          this.cmdFlash = `Sent '${body.cmd}' to ${nodeId}`;
+          this.tplFlash = `Sent '${body.cmd}' to ${nodeId}`;
+          setTimeout(() => { this.cmdFlash = ''; this.tplFlash = ''; }, 3000);
+        } catch (e) {
+          this.cmdFlash = 'Error: ' + e.message;
+          this.tplFlash = 'Error: ' + e.message;
+        }
+      },
+
+      async broadcastCmd(body) {
+        try {
+          const res = await fetch('/api/broadcast', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          this.broadcastFlash = `Broadcast '${body.cmd}' → controlNode/cmd`;
+          setTimeout(() => { this.broadcastFlash = ''; }, 4000);
+        } catch (e) {
+          this.broadcastFlash = 'Error: ' + e.message;
+        }
+      },
+
+      publishRaw() {
+        if (!this.mqttClient || !this.mqttConnected) {
+          this.rawFlash = 'Error: MQTT not connected';
+          return;
+        }
+        if (!this.rawTopic) { this.rawFlash = 'Error: topic is required'; return; }
+        let payload = this.rawPayload;
+        try { JSON.parse(payload); } catch { payload = JSON.stringify({ raw: payload }); }
+        this.mqttClient.publish(this.rawTopic, payload);
+        this.rawFlash = `Published to ${this.rawTopic}`;
+        setTimeout(() => { this.rawFlash = ''; }, 2000);
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Log feed
+      // ══════════════════════════════════════════════════════════
+      addLog(level, text) {
+        const ts = new Date().toLocaleTimeString();
+        this.logLines.push({ level: level.toUpperCase(), text: `${ts}  ${text}` });
+        if (this.logLines.length > this.MAX_LOG_LINES) {
+          this.logLines.splice(0, this.logLines.length - this.MAX_LOG_LINES);
+        }
+        if (this.logAutoScroll) {
+          this.$nextTick(() => {
+            const el = document.getElementById('log-feed');
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Node commands (capability-driven)
+      // ══════════════════════════════════════════════════════════
+      getNodeCommands() {
+        const n = this.cmdTarget ? this.nodes[this.cmdTarget] : null;
+        const items = [];
+        if (n && n.hasSensor) {
+          items.push({ label: 'Calibrate', action: 'calibrate' });
+          items.push({ label: 'TestSensor', action: 'testSensor' });
+        }
+        if (n && n.hasActuator) {
+          items.push({ label: 'TestActuator', action: 'testActuator' });
+        }
+        items.push({ label: 'Reset',  payload: { cmd: 'Reset'  } });
+        items.push({ label: 'Update', payload: { cmd: 'Update' } });
+        return items;
+      },
+
+      cmdButtonClass(label) {
+        if (label === 'Reset')  return 'btn-danger';
+        if (label === 'Update') return 'btn-secondary';
+        return 'btn-primary';
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Live data plot
+      // ══════════════════════════════════════════════════════════
+
+      // Called only when the user explicitly picks a different node — wipes all plot state
+      onNodeChange() {
+        this.plotChannels        = [];
+        this.plotVisibleChannels = {};
+        this.plotLastValues      = {};
+        this.plotDataCount       = 0;
+        this.plotUnits           = '';
+        this.plotChartReady      = false;
+        this._initPending        = false;
+        this.initPlot();
+      },
+
+      initPlot() {
+        if (this._initPending) return;   // already scheduled — avoid re-entrancy
+        this._initPending = true;
+        this.plotChartReady = false;
+        this.$nextTick(() => {
+          this._initPending = false;
+          if (_chart) { _chart.destroy(); _chart = null; }
+          const canvas = document.getElementById('live-chart');
+          if (!canvas) return;
+          const COLORS = ['#38bdf8','#86efac','#fcd34d','#fb923c','#d8b4fe','#fca5a5','#5eead4'];
+          _chart = new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: {
+              animation: false,
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12 } }
+              },
+              scales: {
+                x: { display: false },
+                y: {
+                  grace: '5%',
+                  ticks: { color: '#94a3b8', font: { size: 10 } },
+                  grid:  { color: '#334155' },
+                  title: { display: false, text: '', color: '#94a3b8', font: { size: 10 } },
+                }
+              }
+            }
+          });
+          // Restore any channels that accumulated in plotChannels while init was pending
+          this.plotChannels.forEach((name, idx) => {
+            _chart.data.datasets.push({
+              label:           name,
+              data:            [],
+              hidden:          !this.plotVisibleChannels[name],
+              borderColor:     COLORS[idx % COLORS.length],
+              backgroundColor: 'transparent',
+              borderWidth:     1.5,
+              pointRadius:     0,
+              tension:         0.2,
+            });
+          });
+          if (this.plotUnits) {
+            _chart.options.scales.y.title.text    = this.plotUnits;
+            _chart.options.scales.y.title.display = true;
+          }
+          this.plotChartReady = true;
+          if (this.plotChannels.length) _chart.update('none');
+        });
+      },
+
+      clearPlot() {
+        if (!_chart) return;
+        _chart.data.labels   = [];
+        _chart.data.datasets = [];
+        this.plotChannels            = [];
+        this.plotVisibleChannels     = {};
+        this.plotLastValues          = {};
+        this.plotDataCount           = 0;
+        this.plotMsgTotal            = 0;
+        this.plotUnits               = '';
+        _chart.options.scales.y.title.display = false;
+        _chart.options.scales.y.title.text    = '';
+        _chart.update('none');
+      },
+
+      toggleChannel(ch) {
+        this.plotVisibleChannels[ch] = !this.plotVisibleChannels[ch];
+        this.plotVisibleChannels = { ...this.plotVisibleChannels };
+        if (!_chart) return;
+        const ds = _chart.data.datasets.find(d => d.label === ch);
+        if (ds) { ds.hidden = !this.plotVisibleChannels[ch]; _chart.update('none'); }
+      },
+
+      addDataPoint(nodeId, msg) {
+        if (nodeId !== this.cmdTarget) return;
+        if (!_chart) { this.initPlot(); }
+        const SKIP   = new Set(['type', 'units', 'timestamp', 'clientID', 'state']);
+        const COLORS = ['#38bdf8','#86efac','#fcd34d','#fb923c','#d8b4fe','#fca5a5','#5eead4'];
+        const fields = Object.entries(msg).filter(([k, v]) => !SKIP.has(k) && typeof v === 'number');
+        if (!fields.length) return;
+        this._plotCount++;
+        // Update Y-axis units label if present
+        if (msg.units && msg.units !== this.plotUnits) {
+          this.plotUnits = msg.units;
+          if (_chart) {
+            _chart.options.scales.y.title.text    = msg.units;
+            _chart.options.scales.y.title.display = true;
+          }
+        }
+        // Register any new channels as datasets
+        fields.forEach(([name]) => {
+          if (!this.plotChannels.includes(name)) {
+            this.plotChannels.push(name);
+            if (this.plotVisibleChannels[name] === undefined)
+              this.plotVisibleChannels[name] = true;
+            if (_chart) {
+              _chart.data.datasets.push({
+                label:           name,
+                data:            [],
+                hidden:          !this.plotVisibleChannels[name],
+                borderColor:     COLORS[(this.plotChannels.length - 1) % COLORS.length],
+                backgroundColor: 'transparent',
+                borderWidth:     1.5,
+                pointRadius:     0,
+                tension:         0.2,
+              });
+            }
+          }
+        });
+        if (!_chart) return;
+        // Append rolling label + values
+        _chart.data.labels.push('');
+        if (_chart.data.labels.length > this.plotMaxPts)
+          _chart.data.labels.shift();
+        _chart.data.datasets.forEach(ds => {
+          ds.hidden = !this.plotVisibleChannels[ds.label];
+          const v = msg[ds.label];
+          ds.data.push(v !== undefined ? v : null);
+          if (ds.data.length > this.plotMaxPts) ds.data.shift();
+        });
+        // Track last raw value per channel for debug display
+        fields.forEach(([name, val]) => { this.plotLastValues[name] = val; });
+        this.plotDataCount = _chart.data.labels.length;
+        this.plotMsgTotal++;
+        _chart.update('none');
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Calibration wizard
+      // ══════════════════════════════════════════════════════════
+      async startCalibration(nodeId) {
+        if (!nodeId) { this.cmdFlash = 'Error: no node selected'; return; }
+        if (!Object.keys(this.calibProfiles).length) {
+          try {
+            const res = await fetch('/api/calibration-profiles');
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            this.calibProfiles = await res.json();
+          } catch (e) {
+            this.cmdFlash = 'Error: could not load calibration profiles — ' + e.message;
+            return;
+          }
+        }
+        const profile = this.calibProfiles[nodeId];
+        if (!profile || !profile.phases || !profile.phases.length) {
+          this.cmdFlash = `No calibration profile defined for ${nodeId}`;
+          return;
+        }
+        const phase = profile.phases[0];
+        this.calibWizard = {
+          active:             true,
+          nodeId,
+          phase,
+          state:              (phase.setupPrompts && phase.setupPrompts.length) ? 'setup' : 'point',
+          setupPromptIdx:     0,
+          pointPromptIdx:     0,
+          setupAnswers:       {},
+          currentPointData:   {},
+          pointCount:         0,
+          pointsByChannel:    {},
+          _warnedAboutPoints: false,
+          _awaitingNodeLog:   false,
+          log:                [],
+          input:              '',
+        };
+        this.calibPrint('info', '\u2550'.repeat(52));
+        this.calibPrint('info', profile.label || `Calibration \u2014 ${nodeId}`);
+        if (phase.label) this.calibPrint('info', `Phase: ${phase.label}`);
+        this.calibPrint('info', '\u2550'.repeat(52));
+        for (const line of (phase.intro || [])) this.calibPrint('info', line);
+        this.calibPrint('info', '');
+        if (this.calibWizard.state === 'setup') {
+          this.calibAskNextSetupPrompt();
+        } else {
+          this.calibAskNextPointPrompt();
+        }
+        this.$nextTick(() => {
+          const el = document.getElementById('calib-input');
+          if (el) el.focus();
+        });
+      },
+
+      calibPrint(type, text) {
+        this.calibWizard.log.push({ type, text });
+        this.$nextTick(() => this.calibScrollBottom());
+      },
+
+      calibScrollBottom() {
+        const el = document.getElementById('calib-terminal');
+        if (el) el.scrollTop = el.scrollHeight;
+      },
+
+      calibAskNextSetupPrompt() {
+        const p = this.calibWizard.phase.setupPrompts[this.calibWizard.setupPromptIdx];
+        if (!p) return;
+        this.calibPrint('info', '\u25b6 ' + p.prompt);
+      },
+
+      calibAskNextPointPrompt() {
+        const phase   = this.calibWizard.phase;
+        const p       = phase.pointPrompts[this.calibWizard.pointPromptIdx];
+        if (!p) return;
+        const isFirst = this.calibWizard.pointPromptIdx === 0;
+        const keyword = phase.finishKeyword || 'done';
+        if (isFirst && this.calibWizard.pointCount > 0) {
+          this.calibPrint('info', '');
+          if (phase.channels) {
+            const counts = phase.channels.map(ch =>
+              `${ch}: ${this.calibWizard.pointsByChannel[ch] || 0}`
+            ).join(' | ');
+            this.calibPrint('info', `Points \u2014 ${counts}  (type '${keyword}' to finalize)`);
+          } else {
+            this.calibPrint('info', `Points collected: ${this.calibWizard.pointCount}  (type '${keyword}' to finalize)`);
+          }
+        } else if (isFirst) {
+          this.calibPrint('info', '');
+        }
+        let prompt = p.prompt || '';
+        if (p.promptTemplate) {
+          const ch   = this.calibWizard.currentPointData['channel'] || '';
+          const unit = (p.unitMap && ch) ? (p.unitMap[ch] || p.unit || '') : (p.unit || '');
+          prompt = p.promptTemplate.replace('{channel}', ch).replace('{unit}', unit);
+        }
+        this.calibPrint('info', '\u25b6 ' + prompt);
+      },
+
+      calibHandleInput() {
+        const raw = (this.calibWizard.input || '').trim();
+        this.calibWizard.input = '';
+        if (!raw) return;
+        this.calibPrint('user', '  > ' + raw);
+        const phase   = this.calibWizard.phase;
+        const isFirst = this.calibWizard.pointPromptIdx === 0;
+        if (this.calibWizard.state === 'setup') {
+          const p = phase.setupPrompts[this.calibWizard.setupPromptIdx];
+          const r = this.calibValidate(p, raw);
+          if (!r.ok) {
+            this.calibPrint('warn', '\u26a0 ' + r.msg);
+            this.calibPrint('info', '\u25b6 ' + p.prompt);
+            return;
+          }
+          this.calibWizard.setupAnswers[p.key] = r.value;
+          this.calibWizard.setupPromptIdx++;
+          if (this.calibWizard.setupPromptIdx >= phase.setupPrompts.length) {
+            this.calibWizard.state = 'point';
+            this.calibPrint('ok', '\u2713 Setup complete.');
+            this.calibAskNextPointPrompt();
+          } else {
+            this.calibAskNextSetupPrompt();
+          }
+          return;
+        }
+        // point state
+        if (isFirst && raw.toLowerCase() === (phase.finishKeyword || 'done').toLowerCase()) {
+          this.calibTryFinalize();
+          return;
+        }
+        const p = phase.pointPrompts[this.calibWizard.pointPromptIdx];
+        const r = this.calibValidate(p, raw);
+        if (!r.ok) {
+          this.calibPrint('warn', '\u26a0 ' + r.msg);
+          let prompt = p.prompt || '';
+          if (p.promptTemplate) {
+            const ch   = this.calibWizard.currentPointData['channel'] || '';
+            const unit = (p.unitMap && ch) ? (p.unitMap[ch] || '') : (p.unit || '');
+            prompt = p.promptTemplate.replace('{channel}', ch).replace('{unit}', unit);
+          }
+          this.calibPrint('info', '\u25b6 ' + prompt);
+          return;
+        }
+        this.calibWizard.currentPointData[p.key] = r.value;
+        this.calibWizard.pointPromptIdx++;
+        if (this.calibWizard.pointPromptIdx >= phase.pointPrompts.length) {
+          this.calibBuildAndSend();
+        } else {
+          this.calibAskNextPointPrompt();
+        }
+      },
+
+      calibValidate(p, raw) {
+        switch (p.type) {
+          case 'choice': {
+            const m = (p.choices || []).find(c => c.toLowerCase() === raw.toLowerCase());
+            if (!m) return { ok: false, msg: `Not a valid choice. Options: ${p.choices.join(' / ')}` };
+            return { ok: true, value: m };
+          }
+          case 'number': {
+            const n = parseFloat(raw);
+            if (!isFinite(n)) return { ok: false, msg: `Expected a number (e.g. 2.5). Got: '${raw}'` };
+            return { ok: true, value: n };
+          }
+          case 'int_array': {
+            const parts = raw.split(',').map(s => parseInt(s.trim(), 10));
+            if (!parts.length || parts.some(isNaN))
+              return { ok: false, msg: `Expected comma-separated integers. Got: '${raw}'` };
+            const bad = parts.filter(n => n < (p.min || 1) || n > (p.max || 99));
+            if (bad.length)
+              return { ok: false, msg: `Index out of range: [${bad.join(', ')}]. Valid range: ${p.min}\u20138.` };
+            return { ok: true, value: parts };
+          }
+          default:
+            return { ok: true, value: raw };
+        }
+      },
+
+      calibBuildAndSend() {
+        const phase = this.calibWizard.phase;
+        const cmd   = JSON.parse(JSON.stringify(phase.pointCommandTemplate));
+        Object.assign(cmd.params, this.calibWizard.setupAnswers, this.calibWizard.currentPointData);
+        const ch = this.calibWizard.currentPointData['channel'];
+        if (ch) this.calibWizard.pointsByChannel[ch] = (this.calibWizard.pointsByChannel[ch] || 0) + 1;
+        this.calibWizard.pointCount++;
+        this.calibWizard._warnedAboutPoints = false;
+        fetch(`/api/command/${encodeURIComponent(this.calibWizard.nodeId)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cmd),
+        }).then(async res => {
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            this.calibPrint('error', '\u2715 Command rejected: ' + (d.error || res.statusText));
+          }
+        }).catch(e => this.calibPrint('error', '\u2715 Send error: ' + e.message));
+        this.calibWizard.currentPointData  = {};
+        this.calibWizard.pointPromptIdx    = 0;
+        this.calibPrint('info', '\u23f3 Measuring\u2026');
+        this.calibWizard._awaitingNodeLog  = true;
+      },
+
+      calibTryFinalize() {
+        const phase   = this.calibWizard.phase;
+        const hardMin = phase.hardMinPoints || 0;
+        if (!phase.channels && hardMin > 0 && this.calibWizard.pointCount < hardMin) {
+          if (this.calibWizard._warnedAboutPoints) {
+            this.calibPrint('warn', '\u26a0 Abandoning calibration \u2014 too few points. Sending Reset\u2026');
+            this.stopCalibration();
+            return;
+          }
+          this.calibPrint('warn', `\u26a0 Need at least ${hardMin} data point(s) to finalize.`);
+          this.calibPrint('info', `  Type '${phase.finishKeyword || 'done'}' again to abandon, or keep adding points.`);
+          this.calibWizard._warnedAboutPoints = true;
+          this.calibAskNextPointPrompt();
+          return;
+        }
+        if (phase.channels) {
+          const min   = phase.minPointsPerChannel || 2;
+          const short = phase.channels.filter(ch => (this.calibWizard.pointsByChannel[ch] || 0) < min);
+          if (short.length && !this.calibWizard._warnedAboutPoints) {
+            this.calibPrint('warn', `\u26a0 Channels with fewer than ${min} points: ${short.join(', ')}`);
+            const counts = phase.channels.map(ch =>
+              `${ch}: ${this.calibWizard.pointsByChannel[ch] || 0}`).join(' | ');
+            this.calibPrint('warn', `  Counts \u2014 ${counts}`);
+            this.calibPrint('info', `  Type '${phase.finishKeyword}' again to finalize anyway.`);
+            this.calibWizard._warnedAboutPoints = true;
+            this.calibAskNextPointPrompt();
+            return;
+          }
+        } else {
+          const min = phase.minPoints || 3;
+          if (this.calibWizard.pointCount < min && !this.calibWizard._warnedAboutPoints) {
+            this.calibPrint('warn', `\u26a0 Only ${this.calibWizard.pointCount} point(s) \u2014 ${min} recommended.`);
+            this.calibPrint('info', `  Type '${phase.finishKeyword}' again to finalize anyway.`);
+            this.calibWizard._warnedAboutPoints = true;
+            this.calibAskNextPointPrompt();
+            return;
+          }
+        }
+        this.calibFinalize();
+      },
+
+      calibFinalize() {
+        const phase = this.calibWizard.phase;
+        fetch(`/api/command/${encodeURIComponent(this.calibWizard.nodeId)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(JSON.parse(JSON.stringify(phase.finishCommand))),
+        }).then(async res => {
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            this.calibPrint('error', '\u2715 Finalize rejected: ' + (d.error || res.statusText));
+          }
+        }).catch(e => this.calibPrint('error', '\u2715 Finalize send error: ' + e.message));
+        this.calibPrint('info', '');
+        this.calibPrint('ok', '\u2713 Calibration complete \u2014 finalize command sent to ' + this.calibWizard.nodeId);
+        if (phase.channels) {
+          for (const ch of phase.channels)
+            this.calibPrint('ok', `  ${ch}: ${this.calibWizard.pointsByChannel[ch] || 0} point(s)`);
+        } else {
+          this.calibPrint('ok', `  Total points: ${this.calibWizard.pointCount}`);
+        }
+        this.calibPrint('info', '');
+        this.calibPrint('info', 'Closing terminal in 3 s\u2026');
+        setTimeout(() => { this.calibWizard.active = false; }, 3000);
+      },
+
+      async stopCalibration() {
+        this.testSensorActive = false;
+        this.calibPrint('warn', '');
+        this.calibPrint('warn', '\u26a0 WARNING: Calibration sequence was NOT completed.');
+        this.calibPrint('warn', '  Sending Reset to return node to IDLE\u2026');
+        try {
+          const res = await fetch(`/api/command/${encodeURIComponent(this.calibWizard.nodeId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cmd: 'Reset' }),
+          });
+          if (res.ok) {
+            this.calibPrint('ok', '\u2713 Reset sent to ' + this.calibWizard.nodeId);
+          } else {
+            this.calibPrint('error', '\u2715 Reset rejected: ' + res.statusText);
+          }
+        } catch (e) {
+          this.calibPrint('error', '\u2715 Reset send error: ' + e.message);
+        }
+        setTimeout(() => { this.calibWizard.active = false; }, 1500);
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  Utilities
+      // ══════════════════════════════════════════════════════════
+
+      startTestSensor(nodeId) {
+        // Only waveMakerProbeNode uses wave probes for TestSensor.
+        if (nodeId !== 'waveMakerProbeNode') {
+          this.sendCmd(nodeId, { cmd: 'Test', params: { target: 'sensor' } });
+          return;
+        }
+        const gains = this.nodes[nodeId]?.probeGains || [];
+        // Pre-fill with probes that have a non-identity (calibrated) gain
+        const calibrated = gains
+          .map((g, i) => ({ g, i: i + 1 }))
+          .filter(({ g }) => g !== 1.0 && g !== 0)
+          .map(({ i }) => i);
+        this.testSensorProbeInput = calibrated.join(',');
+        this.testSensorActive = true;
+        this.$nextTick(() => {
+          const el = document.querySelector('[x-show="testSensorActive && cmdTarget"] input');
+          if (el) el.focus();
+        });
+      },
+
+      submitTestSensor() {
+        if (this.cmdTarget !== 'waveMakerProbeNode') {
+          this.sendCmd(this.cmdTarget, { cmd: 'Test', params: { target: 'sensor' } });
+          this.testSensorActive = false;
+          this.cmdFlash = 'TestSensor sent';
+          setTimeout(() => { this.cmdFlash = ''; }, 3000);
+          return;
+        }
+        const indices = this.testSensorProbeInput
+          .split(',')
+          .map(s => parseInt(s.trim(), 10))
+          .filter(n => !isNaN(n) && n >= 1 && n <= 8);
+        if (!indices.length) {
+          this.cmdFlash = 'Error: enter at least one probe index (1–8)';
+          setTimeout(() => { this.cmdFlash = ''; }, 3000);
+          return;
+        }
+        this.sendCmd(this.cmdTarget, { cmd: 'Test', params: { target: 'sensor', activeProbes: indices } });
+        this.testSensorActive = false;
+        this.cmdFlash = `TestSensor sent with probes [${indices.join(', ')}]`;
+        setTimeout(() => { this.cmdFlash = ''; }, 3000);
+      },
+
+      testSensorWarning() {
+        if (!this.testSensorActive || !this.cmdTarget) return '';
+        const gains = this.nodes[this.cmdTarget]?.probeGains || [];
+        if (!gains.length) return '';
+        const indices = this.testSensorProbeInput
+          .split(',')
+          .map(s => parseInt(s.trim(), 10))
+          .filter(n => !isNaN(n) && n >= 1 && n <= 8);
+        const uncalib = indices.filter(i => gains[i - 1] === 1.0 || gains[i - 1] === 0);
+        if (!uncalib.length) return '';
+        const label = uncalib.map(i => `H${i}`).join(', ');
+        return `\u26a0 ${label} ${uncalib.length > 1 ? 'have' : 'has'} default gain (uncalibrated)`;
+      },
+      safeParseJSON(str) {
+        if (!str || !str.trim()) return undefined;
+        try { return JSON.parse(str); }
+        catch { return str; }
+      },
+
+      // ══════════════════════════════════════════════════════════
+      //  TestActuator wizard
+      // ══════════════════════════════════════════════════════════
+      async startTestActuator(nodeId) {
+        if (!nodeId) { this.cmdFlash = 'Error: no node selected'; return; }
+
+        // Lazy-load actuator profiles
+        if (!Object.keys(this.actuatorProfiles).length) {
+          try {
+            const res = await fetch('/api/actuator-profiles');
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            this.actuatorProfiles = await res.json();
+          } catch (e) {
+            this.cmdFlash = 'Error: could not load actuator profiles — ' + e.message;
+            return;
+          }
+        }
+
+        const profile = this.actuatorProfiles[nodeId];
+        if (!profile || !profile.signalTypes || !profile.signalTypes.length) {
+          this.cmdFlash = `No actuator profile defined for ${nodeId}`;
+          return;
+        }
+
+        this.testActuatorNodeId = nodeId;
+        this.testActuatorActive = true;
+        this.testActuatorPending = false;
+        this.testActuatorAwaiting = false;
+        this.testActuatorFormError = '';
+        this.testActuatorSignalType = profile.signalTypes[0].id;
+        this._initActuatorFormDefaults();
+      },
+
+      _initActuatorFormDefaults() {
+        const fields = this.getTestActuatorFields();
+        const vals = {};
+        for (const f of fields) {
+          vals[f.key] = f.default !== undefined ? String(f.default) : '';
+        }
+        this.testActuatorFormValues = vals;
+      },
+
+      onTestActuatorSignalTypeChange() {
+        this.testActuatorFormError = '';
+        this._initActuatorFormDefaults();
+      },
+
+      getTestActuatorSignalTypes() {
+        const profile = this.actuatorProfiles[this.testActuatorNodeId];
+        return profile ? profile.signalTypes : [];
+      },
+
+      getTestActuatorFields() {
+        const profile = this.actuatorProfiles[this.testActuatorNodeId];
+        if (!profile) return [];
+        const st = profile.signalTypes.find(s => s.id === this.testActuatorSignalType);
+        return st ? st.fields : [];
+      },
+
+      submitTestActuator() {
+        this.testActuatorFormError = '';
+        const fields = this.getTestActuatorFields();
+        const params = { target: 'actuator', signalType: this.testActuatorSignalType };
+
+        for (const f of fields) {
+          const raw = (this.testActuatorFormValues[f.key] || '').trim();
+          if (f.required && !raw) {
+            this.testActuatorFormError = `"${f.label}" is required.`;
+            return;
+          }
+          if (!raw) continue;
+
+          if (f.type === 'int_array') {
+            const arr = raw.split(',').map(s => parseInt(s.trim(), 10));
+            if (arr.some(isNaN)) {
+              this.testActuatorFormError = `"${f.label}" must be comma-separated integers.`;
+              return;
+            }
+            params[f.key] = arr;
+          } else if (f.type === 'int') {
+            const v = parseInt(raw, 10);
+            if (isNaN(v) || v < (f.min ?? -Infinity)) {
+              this.testActuatorFormError = `"${f.label}" must be an integer${f.min !== undefined ? ' ≥ ' + f.min : ''}.`;
+              return;
+            }
+            params[f.key] = v;
+          } else {
+            const v = parseFloat(raw);
+            if (isNaN(v) || v < (f.min ?? -Infinity)) {
+              this.testActuatorFormError = `"${f.label}" must be a number${f.min !== undefined ? ' ≥ ' + f.min : ''}.`;
+              return;
+            }
+            params[f.key] = v;
+          }
+        }
+
+        this.sendCmd(this.testActuatorNodeId, { cmd: 'Test', params });
+        this.testActuatorAwaiting = true;
+        // panel stays open; MQTT hook will flip testActuatorPending when CONFIGUREPENDING arrives
+      },
+
+      cancelTestActuator() {
+        this.testActuatorActive = false;
+        this.testActuatorPending = false;
+        this.testActuatorAwaiting = false;
+        this.testActuatorFormError = '';
+      },
+
+      async openActuatorPreview() {
+        const nodeId = this.testActuatorNodeId;
+        try {
+          const listRes = await fetch(`http://${location.hostname}:5000/data/${encodeURIComponent(nodeId)}`);
+          if (!listRes.ok) throw new Error('HTTP ' + listRes.status);
+          const listing = await listRes.json();
+          const files = listing.files || [];
+          // Find most recent file whose tag starts with 'preview_'
+          const previewFile = files.find(f => f.tag.startsWith('preview_') || f.fileTag.startsWith('preview_'));
+          if (!previewFile) {
+            this.cmdFlash = 'No preview data available yet — node may still be computing.';
+            return;
+          }
+          const tag = previewFile.fileTag || previewFile.tag;
+          const dataRes = await fetch(`http://${location.hostname}:5000/data/${encodeURIComponent(nodeId)}?experimentName=${encodeURIComponent(tag)}`);
+          if (!dataRes.ok) throw new Error('HTTP ' + dataRes.status);
+          const resp = await dataRes.json();
+          const { columns, rows } = this._parseRestResponse(resp);
+          const html = this.buildPlotHtml(nodeId, tag, columns, rows);
+          window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+        } catch (e) {
+          this.cmdFlash = 'Error loading preview: ' + e.message;
+        }
+      },
+
+      confirmActuatorTest() {
+        this.sendCmd(this.testActuatorNodeId, { cmd: 'TestValid' });
+        this.testActuatorPending = false;
+        this.testActuatorActive = false;
+      },
+
+      cancelActuatorTest() {
+        this.sendCmd(this.testActuatorNodeId, { cmd: 'Reset' });
+        this.testActuatorPending = false;
+        this.testActuatorAwaiting = false;
+        this.testActuatorActive = false;
+      },
+
+    };
+  }
+  </script>
+</body>
+</html>

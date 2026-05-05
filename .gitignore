@@ -37,6 +37,7 @@ Desktop.ini
 
 # === MATLAB artifacts ===
 *.asv
+**/probe_gains*.mat
 
 # === Data files (test data, experiments, etc.) ===
 *.csv
@@ -52,6 +53,11 @@ tempRestData/
 # Local machine role config (each machine sets this individually)
 config/node_role.txt
 
+# Machine-specific config files (contain IPs, DAQ channel names, hardware limits)
+# Each machine fills in their own copy from the .example template
+config/master_computer.json
+config/carriage_computer.json
+
 # Logs and temp files
 /var/log/lab_framework_update.log
 
@@ -63,6 +69,17 @@ config/node_role.txt
 config/node_registry.json
 
 logs/
+
+# JSONL log files (generated at runtime by node logging)
+*.jsonl
+
+# Generated node log and data directories (runtime outputs, machine-specific)
+**/*Logs/
+**/*NodeData/
+
+# Generated calibration files (produced by test/node runs, not source)
+**/calibrationGains.mat
+**/carriageCalibration.mat
 
 # Test data and experiment outputs
 test/**/VirtualIntegrationTest/waveGenNodeData/
@@ -76,3 +93,9 @@ test/**/VirtualIntegrationTest/*.mat
 # === Keep important files that might match patterns above ===
 !pythonCommon/requirements.txt
 !**/README.md
+
+# === Calibration Gains ===
+waveMakerProbe_node/probe_gains.mat
+waveMakerProbe_node/probe_gains.mat
+
+config/templates/

@@ -1,0 +1,10 @@
+{
+  "_description": "Collect wave probe height data for a set duration. The wavemaker DAQ channel remains active but outputs 0 V throughout - no wave is generated. Use this to record ambient tank conditions or passive wave measurements.",
+  "_nodeType": "waveMakerProbeNode",
+  "_subType": "probes_only",
+  "name": "probes_collect_001",
+  "duration": 30,
+  "signalType": "sinusoidal",
+  "amplitude": 0,
+  "frequency": 0
+}

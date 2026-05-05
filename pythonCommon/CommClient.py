@@ -22,6 +22,7 @@ Usage:
 
 import json
 import logging
+import socket
 import threading
 import time
 from collections import deque
@@ -100,6 +101,7 @@ class CommClient:
         
         # Setup logging
         self.logger = logging.getLogger(f"CommClient.{self.client_id}")
+        self.logger.propagate = False  # prevent double-logging via root logger
         if self.verbose:
             self.logger.setLevel(logging.DEBUG)
             if not self.logger.handlers:
@@ -147,7 +149,6 @@ class CommClient:
             ]
 
     def __del__(self):
-        """Destructor to ensure cleanup on object deletion."""
         try:
             self.disconnect()
             if hasattr(self, 'verbose') and self.verbose and hasattr(self, 'logger'):
@@ -177,8 +178,15 @@ class CommClient:
                 if self.verbose:
                     self.logger.info(f"Attempting to connect to MQTT broker at {self.broker_address}:{self.broker_port}")
                 
-                # Create MQTT client
-                self.mqtt_client = mqtt.Client(self.client_id)
+                # Create MQTT client — paho-mqtt 2.0+ requires callback_api_version
+                try:
+                    self.mqtt_client = mqtt.Client(
+                        mqtt.CallbackAPIVersion.VERSION1,
+                        self.client_id
+                    )
+                except AttributeError:
+                    # paho-mqtt < 2.0 fallback
+                    self.mqtt_client = mqtt.Client(self.client_id)
                 
                 # Set up callbacks
                 self.mqtt_client.on_connect = self._on_connect
@@ -238,17 +246,30 @@ class CommClient:
             return
             
         with self._connection_lock:
-            if not getattr(self, '_connected', False):
-                return
-            
             try:
                 # Stop heartbeat timer
                 self._stop_heartbeat_timer()
                 
-                # Disconnect MQTT client
+                # Best-effort unsubscribe before disconnect.
                 if self.mqtt_client:
-                    self.mqtt_client.loop_stop()
-                    self.mqtt_client.disconnect()
+                    try:
+                        if self._connected:
+                            for topic in list(self.subscriptions):
+                                try:
+                                    self.mqtt_client.unsubscribe(topic)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
+                    try:
+                        self.mqtt_client.loop_stop()
+                    except Exception:
+                        pass
+                    try:
+                        self.mqtt_client.disconnect()
+                    except Exception:
+                        pass
                     
                 self._cleanup_connection()
                 
@@ -271,10 +292,11 @@ class CommClient:
             if self.verbose:
                 self.logger.info("MQTT connection established")
         else:
-            error_msg = f"MQTT connection failed with code {rc}"
+            # Log the failure here. The connect() timeout loop raises the
+            # actual ConnectionError — raising here is silently swallowed
+            # by paho's internal network thread.
             if self.verbose:
-                self.logger.error(error_msg)
-            raise ConnectionError(error_msg)
+                self.logger.error(f"MQTT connection failed with code {rc}")
 
     def _on_disconnect(self, client, userdata, rc):
         """Callback for MQTT disconnection."""
@@ -349,10 +371,16 @@ class CommClient:
                 self.logger.warning("Skipped heartbeat: MQTT client is not connected")
             return
         
+        try:
+            local_ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            local_ip = 'unknown'
+
         payload = {
             'clientID': self.client_id,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
-            'state': 'READY'
+            'health': 'READY',  # connectivity ping — not an FSM state
+            'ip': local_ip
         }
         
         topic = self.get_full_topic('status')

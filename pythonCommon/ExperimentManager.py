@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import pickle
+import sys
 import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -76,7 +77,7 @@ class ExperimentManager(ABC):
     # Supported command keywords
     VALID_COMMANDS = [
         "Calibrate", "Test", "Run", "TestValid",
-        "RunValid", "Reset", "Abort"
+        "RunValid", "Reset", "Abort", "Update"
     ]
     
     def __init__(self, cfg: Dict[str, Any], comm: CommClient, rest: RestClient):
@@ -96,6 +97,7 @@ class ExperimentManager(ABC):
         self.comm = comm
         self.rest = rest
         self.state = State.BOOT
+        self.prev_state = State.BOOT  # state before the most recent transition (used by subclasses for recovery logic)
         self.history = ["BOOT"]
         self.fsm_log = []
         
@@ -109,15 +111,23 @@ class ExperimentManager(ABC):
         self.experiment_spec = None
         self.current_experiment_index = 0
         self.cmd = None
+        self.abort_requested = False
         
         # Logging setup
         self.fsm_tag = f"[FSM:{self.comm.client_id}]"
+        self.log_dir = f"{cfg['clientID']}Logs"  # default; subclasses may override
         
         # Cache capability flags locally (if provided)
         if "hardware" in cfg:
             hw = cfg["hardware"]
             self.has_sensor = hw.get("hasSensor", False)
             self.has_actuator = hw.get("hasActuator", False)
+            # Load node-level settleCheck defaults from hardware config.
+            # Subclasses may further override self.settle_check after super().__init__.
+            sc = hw.get("settleCheck", {})
+            self.settle_check = sc if isinstance(sc, dict) else {}
+        else:
+            self.settle_check = {}
         
         # Load calibration gains if available
         try:
@@ -127,10 +137,9 @@ class ExperimentManager(ABC):
                     self.bias_table = pickle.load(f)
                 print(f"{self.fsm_tag} Loaded previous calibration gains from: {local_gain_path}")
             else:
-                print(f"[WARN] {self.fsm_tag} No previous calibrationGains.pkl found.")
                 self.bias_table = {}
-        except Exception as e:
-            print(f"[WARN] {self.fsm_tag} Failed to load calibration gains: {e}")
+        except Exception:
+            # Absence/parse failure is expected for many nodes.
             self.bias_table = {}
         
         # Check MQTT connection
@@ -196,6 +205,17 @@ class ExperimentManager(ABC):
                 self.transition(State.CONFIGUREVALIDATE)
                 
             elif cmd_name == "TestValid":
+                if self.state != State.CONFIGUREPENDING:
+                    print(f"[WARN] {self.fsm_tag} Invalid TestValid from state: {self.state.name}")
+                    self.log("WARN", f"Invalid TestValid from state: {self.state.name}")
+                    self.transition(State.ERROR)
+                    return
+                if not self.experiment_spec or not self.experiment_spec.get("params"):
+                    self.log("ERROR", "TestValid received but no pending Test parameters are cached.")
+                    self.transition(State.ERROR)
+                    return
+                # Reuse the original Test(actuator) parameters.
+                self.cmd = self.experiment_spec
                 self.transition(State.TESTINGACTUATOR)
                 
             elif cmd_name == "RunValid":
@@ -204,6 +224,7 @@ class ExperimentManager(ABC):
                     self.log("WARN", f"Invalid RunValid from state: {self.state}")
                     self.transition(State.ERROR)
                     return
+                self.abort_requested = False
                 self.transition(State.RUNNING)
                 
             elif cmd_name == "Reset":
@@ -211,6 +232,25 @@ class ExperimentManager(ABC):
                 
             elif cmd_name == "Abort":
                 self.abort("User request via command.")
+
+            elif cmd_name == "Update":
+                # Update: only accepted from IDLE. Node publishes UPDATING,
+                # shuts down cleanly, then exits with code 42 so that
+                # pull_and_deploy.sh re-pulls the latest code and relaunches.
+                if self.state != State.IDLE:
+                    self.log("WARN", f"Update command ignored — node is not IDLE (state: {self.state.name}). Reset first.")
+                    return
+                self.log("INFO", "Update command received. Shutting down for code update...")
+                update_msg = {
+                    "state": "UPDATING",
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                }
+                self.comm.comm_publish(self.comm.get_full_topic("status"), json.dumps(update_msg))
+                try:
+                    self.shutdown()
+                except Exception:
+                    pass
+                sys.exit(42)
                 
         except Exception as e:
             error_msg = (f"Command handler error:\n"
@@ -229,11 +269,12 @@ class ExperimentManager(ABC):
         """
         print(f"[ABORT] {self.fsm_tag}: {reason}")
         abort_msg = {
-            "state": "ABORT",
+            "state": "ERROR",
             "reason": reason,
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         }
         self.comm.comm_publish(self.comm.get_full_topic("status"), json.dumps(abort_msg))
+        self.abort_requested = True
         try:
             self.stop_hardware()
         except Exception:
@@ -258,10 +299,20 @@ class ExperimentManager(ABC):
         """
         return self.bias_table
     
+    def get_experiment_data(self) -> Any:
+        """
+        Returns the experiment_data list from the last run.
+        
+        Returns:
+            List of experiment data records
+        """
+        return self.experiment_data
+    
     def log(self, level: str = "INFO", msg: str = "") -> None:
         """
         Unified logging method for nodes.
-        Sends to CommClient's /log topic and stores in message log buffer.
+        Publishes to the node's MQTT /log topic and appends to fsm_log.
+        fsm_log is written to disk at shutdown.
         
         Args:
             level: Log level (INFO, WARN, ERROR, DEBUG)
@@ -276,8 +327,12 @@ class ExperimentManager(ABC):
         
         try:
             json_msg = json.dumps(log_msg)
-            self.comm.comm_publish(self.comm.get_full_topic("log"), json_msg)
             self.fsm_log.append(json_msg)
+
+            # During shutdown, CommClient may already be disconnected.
+            # Keep local logging without warning in that case.
+            if bool(getattr(self.comm, "connected", False)):
+                self.comm.comm_publish(self.comm.get_full_topic("log"), json_msg)
         except Exception as e:
             print(f"[WARN] {self.fsm_tag} Log publish failed: {msg} {e}")
     
@@ -318,7 +373,7 @@ class ExperimentManager(ABC):
         self.shutdown_hardware()
         
         # Step 2: Create per-node log folder
-        log_dir = f"{self.cfg['clientID']}Logs"
+        log_dir = self.log_dir
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         
@@ -366,11 +421,11 @@ class ExperimentManager(ABC):
     
     def setup_current_experiment(self) -> None:
         """
-        Prepares the current experiment parameters.
-        This method should be called after configure_hardware() to set up
-        the current experiment's parameters and precompute any necessary data.
-        
-        Can be overridden by subclasses to implement specific setup logic.
+        Logs current experiment parameters before each run.
+        Called automatically by the framework inside _enter_configure_validate().
+        Override in subclasses to add node-specific pre-run setup (e.g. resetting
+        buffers, loading per-run params). Always call the base first:
+            super().setup_current_experiment()
         """
         if ("experiments" in self.experiment_spec.get("params", {}) and 
             self.experiment_spec["params"]["experiments"]):
@@ -399,8 +454,10 @@ class ExperimentManager(ABC):
     # Protected State Machine Core
     def transition(self, new_state: State) -> None:
         """
-        Handles state transitions, verifies legality before switching.
-        
+        Validates and executes a state change.
+        Sequence: validate → exit_state(prev) → update state → enter_state(new).
+        Also records prev_state for subclass recovery logic.
+
         Args:
             new_state: Target state to transition to
         """
@@ -410,6 +467,7 @@ class ExperimentManager(ABC):
             return
         
         prev = self.state
+        self.prev_state = prev  # record for subclass recovery (e.g. DAQ reinit after ERROR)
         self._exit_state(prev)
         self.state = new_state
         self.history.append(new_state.name)
@@ -422,12 +480,14 @@ class ExperimentManager(ABC):
     
     def _is_valid_transition(self, from_state: State, to_state: State) -> bool:
         """
-        Determines if a transition is allowed between two FSM states.
-        
+        Returns True if the transition is permitted.
+        IDLE and ERROR are implicit wildcard destinations — every state
+        can always transition to them regardless of the table below.
+
         Args:
             from_state: Current state
             to_state: Desired state
-            
+
         Returns:
             True if transition is allowed
         """
@@ -453,8 +513,9 @@ class ExperimentManager(ABC):
     
     def _enter_state(self, state: State) -> None:
         """
-        Logic executed upon entering a new state.
-        
+        Publishes the new state to the /status topic, then dispatches
+        to the appropriate entry handler.
+
         Args:
             state: New state being entered
         """
@@ -487,8 +548,10 @@ class ExperimentManager(ABC):
     
     def _exit_state(self, state: State) -> None:
         """
-        Logic executed before leaving a state.
-        
+        Dispatches to the exit handler for states that require cleanup before
+        leaving. States with no exit logic are silent — this is intentional,
+        not an omission.
+
         Args:
             state: Old state being exited
         """
@@ -504,6 +567,7 @@ class ExperimentManager(ABC):
     # Individual State Entry/Exit Implementations
     def _enter_idle(self) -> None:
         """Called on entry into the IDLE state"""
+        self.abort_requested = False
         self.stop_hardware()
     
     def _enter_calibrating(self) -> None:
@@ -574,18 +638,25 @@ class ExperimentManager(ABC):
     
     def _enter_post_proc(self) -> None:
         """
-        Handles default post-processing behavior for a node.
-        
-        This function collects experiment data after an experiment run. If data
-        exists in experiment_data, it attempts to store it as a CSV (if homogeneous),
-        otherwise falls back to newline-delimited JSON (JSONL). The saved file is tagged
-        using the experiment name (if available) or a timestamp to prevent overwrites.
-        
-        This method can be overridden by subclasses to implement node-specific
-        post-processing workflows.
+        Saves collected experiment data and advances the run sequence.
+
+        Data already in experiment_data is written to CSV (or JSONL fallback)
+        in a directory named <clientID>Data/. The file is tagged with the
+        experiment name (or a timestamp if no name is set) to prevent overwrites.
+        Data is also sent to the REST server via _send_exp_data().
+
+        In multi-experiment mode this method loops: it calls setup_current_experiment()
+        and transitions back to RUNNING for each remaining sub-experiment, then
+        transitions to DONE when all are complete.
+
+        Override in subclasses to add node-specific processing. Always call the
+        base last:
+            super()._enter_post_proc()
         """
         print(f"{self.fsm_tag} [POSTPROC] Processing experiment data.")
-        
+
+        tag = self._get_experiment_tag()
+
         if self.experiment_data:
             # Always use clientID for base directory
             base_dir = f"{self.cfg['clientID']}Data"
@@ -598,13 +669,9 @@ class ExperimentManager(ABC):
                 else:
                     sub_folder_name = f"MultiExperiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 out_dir = os.path.join(base_dir, sub_folder_name)
-                
-                # Get current experiment name for file tag
-                tag = self._get_experiment_tag()
             else:
                 # Single experiment: use base directory directly
                 out_dir = base_dir
-                tag = self._get_experiment_tag()
             
             if not os.path.exists(out_dir):
                 os.makedirs(out_dir)
@@ -631,10 +698,17 @@ class ExperimentManager(ABC):
         # Check if more experiments remain
         if ("experiments" in self.experiment_spec.get("params", {}) and 
             self.current_experiment_index < len(self.experiment_spec["params"]["experiments"]) - 1):
-            # Multi-experiment mode: setup next experiment
+            # Multi-experiment mode: gate on inter-run readiness before next run.
             try:
-                tag = self._get_experiment_tag()
                 self._send_exp_data(self.experiment_data, tag)  # Send data to REST server
+                # --- Inter-run readiness gate ---
+                sc = self._resolve_settle_check()
+                if sc.get("enabled", False):
+                    self.log("INFO", f"[POSTPROC] settleCheck enabled — awaiting ready signal before "
+                                     f"sub-experiment {self.current_experiment_index + 2}.")
+                    self.await_ready(sc)
+                    self._publish_inter_run_status("INTER_RUN_READY", self.current_experiment_index + 2)
+
                 self.current_experiment_index += 1
                 self.setup_current_experiment()
                 self.transition(State.RUNNING)
@@ -646,7 +720,7 @@ class ExperimentManager(ABC):
             self.transition(State.DONE)
     
     def _enter_done(self) -> None:
-        """Wraps up after experiment completes"""
+        """Sends collected experiment data to the REST server, then transitions to IDLE."""
         print(f"{self.fsm_tag} [DONE] Experiment complete.")
         
         # Send experiment data to REST server
@@ -725,19 +799,110 @@ class ExperimentManager(ABC):
     
     def _enter_error(self) -> None:
         """Failsafe entry into ERROR state"""
+        try:
+            self.stop_hardware()
+        except Exception:
+            pass
         print(f"{self.fsm_tag} [ERROR] System faulted.")
-    
+
+    # ------------------------------------------------------------------
+    # Inter-run readiness (settleCheck) helpers
+    # ------------------------------------------------------------------
+
+    def await_ready(self, sc: Dict[str, Any]) -> bool:
+        """
+        Inter-run readiness hook.
+
+        Called by _enter_post_proc between sub-experiments when settleCheck
+        is enabled.  The base implementation always returns True immediately
+        (no wait), which is correct for nodes with no physical settling
+        behaviour.
+
+        Override in subclasses to implement domain-specific readiness sensing,
+        e.g. a half-amplitude threshold check on sensor channels.
+
+        Args:
+            sc: Resolved settleCheck dict (see _resolve_settle_check).
+
+        Returns:
+            True if node became ready, False if timed out.
+        """
+        return True   # base: no-op, always ready
+
+    def _resolve_settle_check(self) -> Dict[str, Any]:
+        """
+        Merge node-level and run-level settleCheck config into one dict.
+
+        Priority (highest → lowest):
+          1. experimentSpec['params']['settleCheck']   (per-run override)
+          2. self.settle_check                         (set from cfg in __init__)
+          3. built-in defaults
+
+        Returns:
+            Fully populated settleCheck dict.
+        """
+        defaults = {
+            "enabled":        False,
+            "threshold":      0.0,
+            "thresholdUnits": "m",
+            "holdDuration_s": 5.0,
+        }
+        sc = {**defaults}
+
+        # Merge node-level config
+        if self.settle_check and isinstance(self.settle_check, dict):
+            sc = self._merge_dicts(sc, self.settle_check)
+
+        # Merge per-run override
+        if (self.experiment_spec and
+                "settleCheck" in self.experiment_spec.get("params", {}) and
+                isinstance(self.experiment_spec["params"]["settleCheck"], dict)):
+            sc = self._merge_dicts(sc, self.experiment_spec["params"]["settleCheck"])
+
+        return sc
+
+    def _publish_inter_run_status(self, event_name: str, next_exp_index: int) -> None:
+        """
+        Broadcast an inter-run marker on the node's /status topic.
+
+        Other nodes (e.g. a control node) subscribe to /status and can
+        react to INTER_RUN_READY by forwarding RunValid to other nodes
+        that need to stay in lock-step.
+
+        Args:
+            event_name:     'INTER_RUN_READY' or 'INTER_RUN_TIMEOUT'
+            next_exp_index: 1-based index of the sub-experiment about to run
+        """
+        msg: Dict[str, Any] = {
+            "state":        event_name,
+            "nextExpIndex": next_exp_index,
+            "timestamp":    datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+        }
+        experiments = (self.experiment_spec or {}).get("params", {}).get("experiments", [])
+        if next_exp_index <= len(experiments):
+            exp = experiments[next_exp_index - 1]
+            if isinstance(exp, dict) and "name" in exp:
+                msg["nextExpName"] = exp["name"]
+
+        self.comm.comm_publish(self.comm.get_full_topic("status"), json.dumps(msg))
+        self.log("INFO", f"[POSTPROC] Published {event_name} for sub-experiment {next_exp_index}.")
+
+    @staticmethod
+    def _merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """Shallow merge: override fields overwrite matching base fields."""
+        return {**base, **override}
+
     def _exit_calibrating(self) -> None:
-        """Cleanup before leaving CALIBRATING"""
+        """Logs exit from CALIBRATING state."""
         print(f"{self.fsm_tag} [EXIT] Calibration complete.")
     
     def _exit_testing_sensor(self) -> None:
-        """Cleanup before leaving TESTINGSENSOR"""
+        """Stops hardware acquisition before leaving TESTINGSENSOR."""
         print(f"{self.fsm_tag} [EXIT] Stopping sensor diagnostics.")
         self.stop_hardware()
     
     def _exit_running(self) -> None:
-        """Cleanup before leaving RUNNING state"""
+        """Calls stop_hardware() before leaving RUNNING state."""
         self.stop_hardware()
     
     # Abstract Interfaces (to be implemented by subclasses)
@@ -758,7 +923,12 @@ class ExperimentManager(ABC):
     
     @abstractmethod
     def handle_run(self, cmd: Dict[str, Any]) -> None:
-        """Begin the main experiment routine using configuration parameters."""
+        """
+        Begin the main experiment routine using configuration parameters.
+        Subclasses must reset self.experiment_data = [] before appending
+        new records; otherwise multi-experiment runs will accumulate data
+        across sub-experiments.
+        """
         pass
     
     @abstractmethod
