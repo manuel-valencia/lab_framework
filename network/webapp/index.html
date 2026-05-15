@@ -141,7 +141,7 @@
   </style>
 </head>
 
-<body x-data="app()" x-init="init()">
+<body x-data="app()">
 
   <!-- ── Header ──────────────────────────────────────────────── -->
   <header>
@@ -1315,14 +1315,16 @@
         setInterval(() => this.pollNodes(), 10_000);
         // Track live data message rate
         setInterval(() => { this.plotRate = this._plotCount; this._plotCount = 0; }, 1000);
-        // Re-initialise chart when calibration wizard closes (canvas was hidden during init)
-        // Re-init chart when calibration wizard closes — preserve channels so buttons stay visible
+        // Re-init chart when calibration wizard closes — only if Control tab is visible
+        // (canvas is display:none on other tabs; Chart.js would init at 0×0)
         this.$watch('calibWizard.active', val => {
-          if (!val) this.initPlot();
+          if (!val && this.activeTab === 'Control') this.initPlot();
         });
         // Refresh data node list whenever user visits Data tab
+        // Re-init chart when returning to Control tab in case it was destroyed while away
         this.$watch('activeTab', tab => {
           if (tab === 'Data') this.dataFetchNodes();
+          if (tab === 'Control' && !_chart) this.initPlot();
         });
       },
 
