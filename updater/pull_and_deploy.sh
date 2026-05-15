@@ -60,7 +60,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 # --- Parse node count once ---
-NODE_COUNT=$(python3 -c "
+NODE_COUNT=$(python -c "
 import json, sys
 manifest = json.load(open('config/manifest.json'))
 if '$PROFILE' not in manifest:
@@ -123,7 +123,7 @@ while true; do
 
   # --- Step 3: Health check ---
   echo "[INFO] Running health check..."
-  python3 updater/health_check.py
+  python updater/health_check.py
   if [ $? -ne 0 ]; then
     echo "[ERROR] Health check failed. Rolling back to ${PREVIOUS_COMMIT:0:8}"
     git reset --hard $PREVIOUS_COMMIT
@@ -138,7 +138,7 @@ while true; do
   # its own — controlled by "launchMosquitto" in manifest.json.
   # NOTE: disable the system Mosquitto Windows service to avoid port conflicts:
   #   sc config mosquitto start= disabled && net stop mosquitto
-  LAUNCH_MOSQUITTO=$(python3 -c "import json; m=json.load(open('config/manifest.json')); print(str(m.get('$PROFILE',{}).get('launchMosquitto',False)).lower())")
+  LAUNCH_MOSQUITTO=$(python -c "import json; m=json.load(open('config/manifest.json')); print(str(m.get('$PROFILE',{}).get('launchMosquitto',False)).lower())")
   if [ "$LAUNCH_MOSQUITTO" = "true" ]; then
     if kill -0 "$MOSQUITTO_PID" 2>/dev/null; then
       echo "[INFO] Mosquitto already running (PID $MOSQUITTO_PID), skipping relaunch."
@@ -158,8 +158,8 @@ while true; do
   LEAD_PID=""
 
   for i in $(seq 0 $((NODE_COUNT - 1))); do
-    SCRIPT=$(python3 -c "import json; n=json.load(open('config/manifest.json'))['$PROFILE']['nodes'][$i]; print(n['startup_script'])")
-    PATH_TO_SCRIPT=$(python3 -c "import json; n=json.load(open('config/manifest.json'))['$PROFILE']['nodes'][$i]; print(n['path'])")
+    SCRIPT=$(python -c "import json; n=json.load(open('config/manifest.json'))['$PROFILE']['nodes'][$i]; print(n['startup_script'])")
+    PATH_TO_SCRIPT=$(python -c "import json; n=json.load(open('config/manifest.json'))['$PROFILE']['nodes'][$i]; print(n['path'])")
     FULL_PATH="${PATH_TO_SCRIPT}${SCRIPT}"
     EXT="${SCRIPT##*.}"
 
@@ -178,7 +178,7 @@ while true; do
 
     elif [ "$EXT" = "py" ]; then
       echo "[INFO] Launching Python node (background): $FULL_PATH"
-      python3 "$FULL_PATH" "$CONFIG_FILE" "$PROFILE" &
+      python "$FULL_PATH" "$CONFIG_FILE" "$PROFILE" &
       PYTHON_PID=$!
       BG_PIDS+=($PYTHON_PID)
       echo "[INFO] Python node PID: $PYTHON_PID"
